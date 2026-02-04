@@ -1,0 +1,196 @@
+import { OpenAIService, createOpenAIService } from '../openaiService';
+
+// Create mock function
+const mockCreate = jest.fn();
+
+// Mock OpenAI client
+jest.mock('openai', () => {
+  return jest.fn().mockImplementation(() => ({
+    chat: {
+      completions: {
+        create: mockCreate,
+      },
+    },
+  }));
+});
+
+// Import after mock is set up
+import OpenAI from 'openai';
+
+describe('OpenAIService', () => {
+  let service: OpenAIService;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Qwen Provider', () => {
+    beforeEach(() => {
+      // Mock environment variables
+      process.env.OPENAI_BASE_MODEL = 'qwen-plus';
+      process.env.OPENAI_MINI_MODEL = 'qwen-turbo';
+
+      service = createOpenAIService({
+        apiKey: 'test-key',
+        provider: 'qwen',
+      });
+    });
+
+    afterEach(() => {
+      // Clean up environment variables
+      delete process.env.OPENAI_BASE_MODEL;
+      delete process.env.OPENAI_MINI_MODEL;
+    });
+
+    it('should initialize with Qwen configuration', () => {
+      const info = service.getProviderInfo();
+      expect(info.provider).toBe('Qwen');
+      expect(info.model).toBe('qwen-plus');
+      expect(info.miniModel).toBe('qwen-turbo');
+      expect(info.supportsStreaming).toBe(true);
+    });
+
+    it('should force temperature to 1 for Qwen provider', async () => {
+      mockCreate.mockResolvedValue({
+        id: 'test',
+        choices: [{ message: { content: 'test response', role: 'assistant' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+      await service.createChatCompletion({
+        model: 'qwen-plus',
+        messages: [{ role: 'user', content: 'test' }],
+        temperature: 0.7, // This should be overridden
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          temperature: 1, // Should be forced to 1
+        })
+      );
+    });
+
+    it('should respect max_tokens limit', async () => {
+      mockCreate.mockResolvedValue({
+        id: 'test',
+        choices: [{ message: { content: 'test response', role: 'assistant' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+      await service.createChatCompletion({
+        model: 'qwen-plus',
+        messages: [{ role: 'user', content: 'test' }],
+        max_tokens: 50000, // This exceeds Qwen's limit
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          max_tokens: 32768, // Should be capped to model limit
+        })
+      );
+    });
+
+    it('should return appropriate models for tasks', () => {
+      expect(service.getModelForTask('base')).toBe('qwen-plus');
+      expect(service.getModelForTask('mini')).toBe('qwen-turbo');
+    });
+  });
+
+  describe('OpenAI Provider', () => {
+    beforeEach(() => {
+      // Mock environment variables
+      process.env.OPENAI_BASE_MODEL = 'gpt-4o';
+      process.env.OPENAI_MINI_MODEL = 'gpt-4o-mini';
+
+      service = createOpenAIService({
+        apiKey: 'test-key',
+        provider: 'openai',
+      });
+    });
+
+    afterEach(() => {
+      // Clean up environment variables
+      delete process.env.OPENAI_BASE_MODEL;
+      delete process.env.OPENAI_MINI_MODEL;
+    });
+
+    it('should initialize with OpenAI configuration', () => {
+      const info = service.getProviderInfo();
+      expect(info.provider).toBe('OpenAI');
+      expect(info.model).toBe('gpt-4o');
+      expect(info.miniModel).toBe('gpt-4o-mini');
+      expect(info.supportsStreaming).toBe(true);
+    });
+
+    it('should preserve temperature for OpenAI provider', async () => {
+      mockCreate.mockResolvedValue({
+        id: 'test',
+        choices: [{ message: { content: 'test response', role: 'assistant' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+      await service.createChatCompletion({
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: 'test' }],
+        temperature: 0.7, // This should be preserved
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          temperature: 0.7, // Should be preserved
+        })
+      );
+    });
+
+    it('should return appropriate models for tasks', () => {
+      expect(service.getModelForTask('base')).toBe('gpt-4o');
+      expect(service.getModelForTask('mini')).toBe('gpt-4o-mini');
+    });
+  });
+
+  describe('Custom Provider with Custom Models', () => {
+    beforeEach(() => {
+      service = createOpenAIService({
+        apiKey: 'test-key',
+        provider: 'custom',
+        model: 'custom-model-large',
+        miniModel: 'custom-model-small',
+        baseUrl: 'https://custom-api.example.com/v1',
+      });
+    });
+
+    it('should initialize with custom configuration', () => {
+      const info = service.getProviderInfo();
+      expect(info.provider).toBe('Custom Provider');
+      expect(info.model).toBe('custom-model-large');
+      expect(info.miniModel).toBe('custom-model-small');
+      expect(info.supportsStreaming).toBe(true);
+    });
+
+    it('should return custom models for tasks', () => {
+      expect(service.getModelForTask('base')).toBe('custom-model-large');
+      expect(service.getModelForTask('mini')).toBe('custom-model-small');
+    });
+  });
+
+  describe('Error Handling', () => {
+    beforeEach(() => {
+      service = createOpenAIService({
+        apiKey: 'test-key',
+        provider: 'openai',
+      });
+    });
+
+    it('should handle API errors gracefully', async () => {
+      const errorMessage = 'API rate limit exceeded';
+      mockCreate.mockRejectedValue(new Error(errorMessage));
+
+      await expect(
+        service.createChatCompletion({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: 'test' }],
+        })
+      ).rejects.toThrow(errorMessage);
+    });
+  });
+});

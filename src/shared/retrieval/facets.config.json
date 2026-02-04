@@ -1,0 +1,207 @@
+{
+  "facets": {
+    "auth": {
+      "seeds": [
+        "Authorization",
+        "Bearer",
+        "JWT",
+        "verifyAuth",
+        "registerEnhancedAuth",
+        "apikey",
+        "amb_",
+        "bcrypt",
+        "supabase",
+        "nextauth",
+        "clerk",
+        "RLS",
+        "policy",
+        "auth.uid()",
+        "authenticate",
+        "login",
+        "session",
+        "token"
+      ],
+      "description": "Authentication and authorization systems"
+    },
+    "routing": {
+      "seeds": [
+        "route",
+        "handler",
+        "Fastify",
+        "Express",
+        "middleware",
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "app.use",
+        "router",
+        "endpoint",
+        "api",
+        "controller"
+      ],
+      "description": "API routes and request handling"
+    },
+    "data": {
+      "seeds": [
+        "schema",
+        "migration",
+        "policy",
+        "RLS",
+        "org_id",
+        "auth.uid()",
+        "prisma",
+        "supabase",
+        "database",
+        "table",
+        "model",
+        "entity",
+        "repository",
+        "DAO",
+        "query",
+        "sql"
+      ],
+      "description": "Data models, schemas, and database operations"
+    },
+    "observability": {
+      "seeds": [
+        "logger",
+        "metrics",
+        "traces",
+        "OpenTelemetry",
+        "prometheus",
+        "datadog",
+        "sentry",
+        "error",
+        "debug",
+        "log",
+        "monitor"
+      ],
+      "description": "Logging, monitoring, and error tracking"
+    },
+    "build_runtime": {
+      "seeds": [
+        ".env",
+        "docker",
+        "compose",
+        "worker",
+        "queue",
+        "cron",
+        "scheduler",
+        "build",
+        "deploy",
+        "ci",
+        "cd",
+        "pipeline"
+      ],
+      "description": "Build configuration, deployment, and runtime environment"
+    },
+    "security": {
+      "seeds": [
+        "rateLimit",
+        "helmet",
+        "CSP",
+        "secret",
+        "hash",
+        "salt",
+        "encrypt",
+        "decrypt",
+        "key",
+        "certificate",
+        "ssl",
+        "tls"
+      ],
+      "description": "Security configurations and data protection"
+    },
+    "ui_frontend": {
+      "seeds": [
+        "AuthProvider",
+        "ProtectedRoute",
+        "middleware.ts",
+        "layout.tsx",
+        "component",
+        "react",
+        "vue",
+        "angular",
+        "jsx",
+        "tsx",
+        "state",
+        "props",
+        "hook"
+      ],
+      "description": "Frontend UI components and client-side logic"
+    },
+    "integrations": {
+      "seeds": [
+        "GitHubApp",
+        "webhook",
+        "stripe",
+        "slack",
+        "discord",
+        "aws",
+        "gcp",
+        "azure",
+        "api",
+        "integration",
+        "external",
+        "third-party"
+      ],
+      "description": "External service integrations and APIs"
+    },
+    "testing_ci": {
+      "seeds": [
+        "jest",
+        "vitest",
+        "e2e",
+        "playwright",
+        "test-utils",
+        "spec",
+        "mock",
+        "fixture",
+        "coverage",
+        "unit",
+        "integration"
+      ],
+      "description": "Testing frameworks and continuous integration"
+    }
+  },
+  "retrieval": {
+    "perFacetCap": {
+      "auth": 6,
+      "routing": 4,
+      "data": 3,
+      "observability": 2,
+      "build_runtime": 2,
+      "security": 2,
+      "ui_frontend": 3,
+      "integrations": 2,
+      "testing_ci": 2
+    },
+    "mmrLambda": 0.3,
+    "minSim": 0.18,
+    "penalties": {
+      "tests/": 0.8,
+      "scripts/": 0.8,
+      "docs/": 0.7,
+      "*.md": 0.7,
+      "*.txt": 0.7,
+      ".env*": 0.3,
+      "node_modules/": 0.1
+    },
+    "maxRetries": 3,
+    "timeoutMs": 5000
+  },
+  "anchors": {
+    "auth": [
+      "verifyAuth",
+      "verifyToken",
+      "authenticate",
+      "authorize",
+      "checkAuth",
+      "isAuthenticated",
+      "requireAuth"
+    ],
+    "routing": ["app.use", "app.get", "app.post", "app.put", "app.delete", "router", "middleware"],
+    "data": ["supabase", "prisma", "createClient", "database", "query"]
+  }
+}

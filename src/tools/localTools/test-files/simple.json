@@ -1,0 +1,17 @@
+{
+  "name": "test",
+  "nested": {
+    "obj": {
+      "key1": "value1",
+      "key2": {
+        "deep": "value"
+      }
+    },
+    "arr": [
+      "item1",
+      {
+        "sub": true
+      }
+    ]
+  }
+}

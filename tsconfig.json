@@ -1,0 +1,47 @@
+{
+  "compilerOptions": {
+    "target": "ES2020", // Updated from ES2015 to support private identifiers
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "outDir": "./dist",
+    "rootDir": "./",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true, // Keep this to avoid issues with third-party libraries
+    "resolveJsonModule": true,
+    "declaration": true,
+    "downlevelIteration": true,
+    "types": ["node", "jest"],
+    "lib": ["ES2020", "DOM"] // Update lib to match target
+  },
+  "include": [
+    "src/index.ts",
+    "src/cli.ts",
+    "src/tools/**/*.ts",
+    "src/compactor/**/*.ts",
+    "src/client/apiClient.ts",
+    "src/local/**/*.ts",
+    "src/utils/**/*.ts",
+    "src/core/**/*.ts",
+    "src/shared/**/*.json",
+    "tools/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "../node_modules",
+    "dist/**/*",
+    "dist/src/**/*",
+    "**/__tests__/**/*.ts",
+    "**/*.test.ts",
+    "tools-old/**/*.ts",
+    "search-old/**/*.ts",
+    "database-old/**/*.ts",
+    "llm-old/**/*.ts",
+    "indexers-old/**/*.ts",
+    "renderers-old/**/*.ts",
+    "types-old/**/*.ts",
+    "../src/**/*.ts",
+    "*.ts"
+  ]
+}
