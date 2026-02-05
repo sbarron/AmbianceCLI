@@ -162,7 +162,7 @@ export class AmbianceAPIClient {
     // Prepare headers - API key is optional for local servers
     const headers: any = {
       'Content-Type': 'application/json',
-      'User-Agent': 'ambiance-mcp-proxy/0.0.1',
+      'User-Agent': 'ambiance-cli-proxy/0.0.1',
     };
 
     // Only add Authorization header if API key is provided

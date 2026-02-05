@@ -8,8 +8,5 @@
     "test/**/*.ts",
     "tools/**/*.ts"
   ],
-  "exclude": [
-    "dist",
-    "node_modules"
-  ]
+  "exclude": ["dist", "node_modules"]
 }

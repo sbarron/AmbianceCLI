@@ -1,0 +1,32 @@
+{
+  "name": "frontend",
+  "description": "Frontend code pattern analysis.",
+  "defaults": {
+    "subtree": "src",
+    "maxFiles": 20,
+    "format": "json"
+  },
+  "command": "frontend",
+  "args": [
+    "--json",
+    "--project-path",
+    "${projectPath}",
+    "--subtree",
+    "${subtree}",
+    "--max-files",
+    "${maxFiles}"
+  ],
+  "outputSchema": {
+    "framework": "string - detected framework (React, Vue, Angular, etc.)",
+    "components": "array - component files and their types",
+    "stateManagement": "string - detected state library (Redux, Zustand, etc.)",
+    "routing": "string - routing library if detected",
+    "patterns": "array - common patterns found (hooks, HOCs, etc.)",
+    "insights": "array - architectural observations"
+  },
+  "notes": [
+    "Does not require embeddings",
+    "Automatically detects React, Vue, Angular, Svelte",
+    "Use for UI-related queries and component analysis"
+  ]
+}

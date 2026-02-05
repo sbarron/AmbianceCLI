@@ -3,7 +3,7 @@ describe('Local Debug Context Tool', () => {
 
   beforeAll(() => {
     try {
-      const module = require('../dist/src/tools/debug/localDebugContext');
+      const module = require('../src/tools/debug/localDebugContext');
       handleLocalDebugContext = module.handleLocalDebugContext;
     } catch (error) {
       console.warn('Local debug context module not available:', error.message);

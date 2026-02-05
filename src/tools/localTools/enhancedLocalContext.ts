@@ -36,6 +36,7 @@ export interface LocalContextResponse {
   success: boolean;
   answerDraft: string;
   jumpTargets: JumpTarget[];
+  byFile?: Record<string, JumpTarget[]>; // Jump targets grouped by file
   miniBundle: BundleSnippet[];
   next: NextActions;
   evidence: string[];
@@ -50,7 +51,9 @@ export interface JumpTarget {
   end?: number;
   role: string;
   confidence: number;
+  relevance?: number; // Separate relevance score for query importance
   why: string[];
+  snippet?: string; // Code snippet preview (5-10 lines)
 }
 
 export interface BundleSnippet {
@@ -73,6 +76,7 @@ export interface ContextMetadata {
   compactedTokens: number;
   bundleTokens: number;
   processingTimeMs: number;
+  roleDistribution?: Record<string, number>; // Count of symbols by role
 }
 
 // ===== AST QUERY DSL =====
@@ -420,13 +424,17 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     const allMatches = [...astMatches, ...extraCandidates];
     const candidates = await rankCandidates(allMatches, indices, request.query, plan);
 
-    // 6. Select top jump targets (respect maxSimilarChunks)
-    let jumpTargets = selectJumpTargets(candidates, {
+    // 6. Select top jump targets (respect maxSimilarChunks) with enhancements
+    let jumpTargets = await selectJumpTargets(candidates, {
       max: Math.max(1, Math.min(request.maxSimilarChunks, 20)),
+      query: request.query,
+      files: indices.files,
     });
 
     if (jumpTargets.length === 0 && candidates.length > 0) {
       const candidate = candidates[0];
+      const snippet = await extractSnippetPreview(candidate, indices.files);
+      const relevance = calculateRelevance(candidate, request.query);
       jumpTargets = [
         {
           file: candidate.file,
@@ -435,7 +443,9 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
           end: candidate.end,
           role: candidate.role || inferRoleFromSymbol(candidate.symbol),
           confidence: candidate.score,
+          relevance,
           why: candidate.reasons,
+          snippet,
         },
       ];
     }
@@ -470,10 +480,28 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
 
     const processingTimeMs = Date.now() - startTime;
 
+    // Calculate role distribution
+    const roleDistribution: Record<string, number> = {};
+    jumpTargets.forEach(target => {
+      const role = target.role;
+      roleDistribution[role] = (roleDistribution[role] || 0) + 1;
+    });
+
+    // Group jump targets by file
+    const byFile: Record<string, JumpTarget[]> = {};
+    jumpTargets.forEach(target => {
+      const relPath = getRelativePath(target.file);
+      if (!byFile[relPath]) {
+        byFile[relPath] = [];
+      }
+      byFile[relPath].push(target);
+    });
+
     return {
       success: true,
       answerDraft,
       jumpTargets,
+      byFile,
       miniBundle,
       next: nextActions,
       evidence,
@@ -484,6 +512,7 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
         compactedTokens: 0,
         bundleTokens: miniBundle.reduce((sum, item) => sum + estimateTokensShared(item.snippet), 0),
         processingTimeMs,
+        roleDistribution,
       },
       llmBundle,
     };
@@ -697,16 +726,139 @@ async function rankCandidates(
   return ranked.slice(0, 20); // Return top 20 candidates
 }
 
-function selectJumpTargets(candidates: CandidateSymbol[], options: { max: number }): JumpTarget[] {
-  return candidates.slice(0, options.max).map(candidate => ({
-    file: candidate.file,
-    symbol: candidate.symbol,
-    start: candidate.start,
-    end: candidate.end,
-    role: candidate.role || inferRoleFromSymbol(candidate.symbol),
-    confidence: candidate.score,
-    why: candidate.reasons,
-  }));
+async function selectJumpTargets(
+  candidates: CandidateSymbol[],
+  options: { max: number; query?: string; files?: FileInfo[] }
+): Promise<JumpTarget[]> {
+  // 1. Deduplicate by file+symbol+start
+  const seen = new Set<string>();
+  const deduplicated = candidates.filter(candidate => {
+    const key = `${candidate.file}:${candidate.symbol}:${candidate.start}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  // 2. Take top N after deduplication
+  const topCandidates = deduplicated.slice(0, options.max);
+
+  // 3. Create jump targets with enhancements
+  const targets = await Promise.all(
+    topCandidates.map(async candidate => {
+      // Calculate relevance based on query match (if query provided)
+      let relevance: number | undefined;
+      if (options.query) {
+        relevance = calculateRelevance(candidate, options.query);
+      }
+
+      // Extract snippet preview (5-10 lines)
+      let snippet: string | undefined;
+      if (options.files && candidate.start && candidate.end) {
+        snippet = await extractSnippetPreview(candidate, options.files);
+      }
+
+      return {
+        file: candidate.file,
+        symbol: candidate.symbol,
+        start: candidate.start,
+        end: candidate.end,
+        role: candidate.role || inferRoleFromSymbol(candidate.symbol),
+        confidence: candidate.score,
+        relevance,
+        why: candidate.reasons,
+        snippet,
+      };
+    })
+  );
+
+  return targets;
+}
+
+/**
+ * Calculate relevance score based on how well the candidate matches the query
+ */
+function calculateRelevance(candidate: CandidateSymbol, query: string): number {
+  const queryLower = query.toLowerCase();
+  const symbolLower = candidate.symbol.toLowerCase();
+  const fileLower = candidate.file.toLowerCase();
+
+  let score = 0.5; // Base relevance
+
+  // Exact symbol match: high relevance
+  if (symbolLower.includes(queryLower)) {
+    score += 0.3;
+  }
+
+  // Query words match symbol parts
+  const queryWords = queryLower.split(/\s+/);
+  const matchedWords = queryWords.filter(
+    word => word.length > 2 && symbolLower.includes(word)
+  );
+  score += (matchedWords.length / queryWords.length) * 0.2;
+
+  // File path relevance
+  if (fileLower.includes(queryLower)) {
+    score += 0.15;
+  }
+
+  // Role-based boost
+  const role = candidate.role || inferRoleFromSymbol(candidate.symbol);
+  if (role === 'interface' || role === 'export') {
+    score += 0.1; // Public APIs are more relevant
+  }
+
+  // Normalize to 0-1 range
+  return Math.min(1.0, score);
+}
+
+/**
+ * Extract a snippet preview (5-10 lines) from the file
+ */
+async function extractSnippetPreview(
+  candidate: CandidateSymbol,
+  files: FileInfo[]
+): Promise<string | undefined> {
+  try {
+    const fs = await import('fs').then(m => m.promises);
+
+    // Find the file
+    const fileInfo = files.find(f => f.absPath === candidate.file || f.relPath === candidate.file);
+    if (!fileInfo) {
+      return undefined;
+    }
+
+    // Read the file content
+    const content = await fs.readFile(fileInfo.absPath, 'utf-8');
+    const lines = content.split('\n');
+
+    // Extract lines around the symbol (show context)
+    const startLine = Math.max(0, candidate.start - 1); // Convert to 0-indexed
+    const endLine = Math.min(lines.length, candidate.end || candidate.start + 5);
+
+    // Take at most 10 lines
+    const maxLines = 10;
+    const actualEnd = Math.min(endLine, startLine + maxLines);
+
+    const snippetLines = lines.slice(startLine, actualEnd);
+
+    // Trim leading/trailing empty lines
+    while (snippetLines.length > 0 && snippetLines[0].trim() === '') {
+      snippetLines.shift();
+    }
+    while (snippetLines.length > 0 && snippetLines[snippetLines.length - 1].trim() === '') {
+      snippetLines.pop();
+    }
+
+    return snippetLines.join('\n');
+  } catch (error) {
+    logger.debug('Failed to extract snippet preview', {
+      file: candidate.file,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
 
 async function buildMiniBundle(

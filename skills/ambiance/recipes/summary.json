@@ -1,0 +1,24 @@
+{
+  "name": "summary",
+  "description": "Single-file AST summary.",
+  "defaults": {
+    "format": "json"
+  },
+  "command": "summary",
+  "args": ["${filePath}", "--json"],
+  "outputSchema": {
+    "file": "string - file path",
+    "language": "string - detected language",
+    "exports": "array - exported functions, classes, constants",
+    "imports": "array - imported modules and dependencies",
+    "functions": "array - function definitions with signatures",
+    "classes": "array - class definitions",
+    "interfaces": "array - TypeScript interfaces (if applicable)",
+    "complexity": "string - estimated complexity (low/medium/high)"
+  },
+  "notes": [
+    "Does not require embeddings",
+    "Use for quick file overview without full context",
+    "Shows public API surface of a module"
+  ]
+}

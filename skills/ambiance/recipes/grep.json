@@ -1,0 +1,34 @@
+{
+  "name": "grep",
+  "description": "AST-based structural search.",
+  "defaults": {
+    "language": "typescript",
+    "format": "json"
+  },
+  "command": "grep",
+  "args": [
+    "${pattern}",
+    "--json",
+    "--project-path",
+    "${projectPath}",
+    "--language",
+    "${language}"
+  ],
+  "outputSchema": {
+    "pattern": "string - the AST pattern used",
+    "language": "string - target language",
+    "matches": "array - matched code with file, line, and captures",
+    "totalMatches": "number - total number of matches found"
+  },
+  "patternExamples": [
+    "function $NAME($$ARGS) { $$BODY } - match any function",
+    "class $NAME { $$BODY } - match any class",
+    "import { $IMPORT } from '$MODULE' - match imports",
+    "$OBJ.$METHOD($$ARGS) - match method calls"
+  ],
+  "notes": [
+    "Does not require embeddings",
+    "Use $VAR for single captures, $$VAR for multiple",
+    "Faster and more precise than regex for code patterns"
+  ]
+}

@@ -76,6 +76,7 @@ export interface SymbolMaps {
 
 export interface ProjectHints {
   // High-level project guidance
+  projectPurpose?: string; // Brief description of what the project does
   primaryLanguages: string[];
   architectureKeywords: string[];
   domainKeywords: string[];
@@ -454,7 +455,16 @@ export class ProjectHintsGenerator {
     const totalSize = limitedFiles.reduce((sum: number, file: FileInfo) => sum + file.size, 0);
     const codebaseSize = this.formatFileSize(totalSize);
 
+    // Generate project purpose summary
+    const projectPurpose = await this.generateProjectPurpose(
+      projectPath,
+      limitedFiles,
+      architectureKeywords,
+      domainKeywords
+    );
+
     const hints: ProjectHints = {
+      projectPurpose,
       primaryLanguages: this.getPrimaryLanguages(limitedFiles),
       architectureKeywords,
       domainKeywords,
@@ -476,6 +486,174 @@ export class ProjectHintsGenerator {
     });
 
     return hints;
+  }
+
+  /**
+   * Generate a high-level project purpose summary
+   */
+  private async generateProjectPurpose(
+    projectPath: string,
+    files: FileInfo[],
+    architectureKeywords: string[],
+    domainKeywords: string[]
+  ): Promise<string | undefined> {
+    try {
+      // Try to get purpose from package.json first
+      const packageJsonPath = path.join(projectPath, 'package.json');
+      try {
+        const packageJsonContent = await readFile(packageJsonPath, 'utf-8');
+        const packageJson = JSON.parse(packageJsonContent);
+        if (packageJson.description && packageJson.description.trim()) {
+          return packageJson.description.trim();
+        }
+      } catch {
+        // package.json not found or no description, continue
+      }
+
+      // Try to extract from README
+      const readmeFile = files.find(
+        f =>
+          f.relPath.toLowerCase() === 'readme.md' ||
+          f.relPath.toLowerCase() === 'readme.txt' ||
+          f.relPath.toLowerCase() === 'readme'
+      );
+
+      if (readmeFile) {
+        try {
+          const readmeContent = await readFile(readmeFile.absPath, 'utf-8');
+          const firstParagraph = this.extractFirstMeaningfulParagraph(readmeContent);
+          if (firstParagraph) {
+            return firstParagraph;
+          }
+        } catch {
+          // README not readable, continue
+        }
+      }
+
+      // Fallback: Generate purpose from project structure
+      return this.inferPurposeFromStructure(files, architectureKeywords, domainKeywords);
+    } catch (error) {
+      logger.warn('Failed to generate project purpose', {
+        error: (error as Error).message,
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Extract the first meaningful paragraph from README
+   */
+  private extractFirstMeaningfulParagraph(content: string): string | null {
+    const lines = content.split('\n');
+    let paragraphLines: string[] = [];
+    let inCodeBlock = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Skip code blocks
+      if (trimmed.startsWith('```')) {
+        inCodeBlock = !inCodeBlock;
+        continue;
+      }
+
+      if (inCodeBlock) continue;
+
+      // Skip headers, badges, and empty lines
+      if (
+        trimmed.startsWith('#') ||
+        trimmed.startsWith('[![') ||
+        trimmed.startsWith('[!') ||
+        trimmed.startsWith('---') ||
+        trimmed.length === 0
+      ) {
+        if (paragraphLines.length > 0) break; // End of paragraph
+        continue;
+      }
+
+      paragraphLines.push(trimmed);
+
+      // If we have a substantial paragraph, stop
+      if (paragraphLines.join(' ').length > 100) {
+        break;
+      }
+    }
+
+    if (paragraphLines.length === 0) return null;
+
+    const paragraph = paragraphLines.join(' ').trim();
+
+    // Clean up common README patterns
+    const cleaned = paragraph
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Remove markdown links
+      .replace(/`([^`]+)`/g, '$1') // Remove code formatting
+      .replace(/\*\*([^*]+)\*\*/g, '$1') // Remove bold
+      .replace(/\*([^*]+)\*/g, '$1') // Remove italic
+      .trim();
+
+    // Return if it's a meaningful description (not just a title)
+    if (cleaned.length > 20 && !cleaned.match(/^[A-Z][a-z]+ [A-Z][a-z]+$/)) {
+      return cleaned.length > 150 ? cleaned.substring(0, 147) + '...' : cleaned;
+    }
+
+    return null;
+  }
+
+  /**
+   * Infer project purpose from file structure and patterns
+   */
+  private inferPurposeFromStructure(
+    files: FileInfo[],
+    architectureKeywords: string[],
+    domainKeywords: string[]
+  ): string {
+    const languages = this.getPrimaryLanguages(files);
+    const hasTests = files.some(f => f.relPath.toLowerCase().includes('test'));
+    const hasApi = files.some(
+      f => f.relPath.toLowerCase().includes('api') || f.relPath.toLowerCase().includes('route')
+    );
+    const hasCli = files.some(f => f.relPath.toLowerCase().includes('cli'));
+    const hasWeb = files.some(
+      f =>
+        f.relPath.toLowerCase().includes('component') ||
+        f.relPath.toLowerCase().includes('view') ||
+        f.relPath.toLowerCase().includes('page')
+    );
+
+    let purposeParts: string[] = [];
+
+    // Determine project type
+    if (hasCli && hasApi) {
+      purposeParts.push('CLI tool with API integration');
+    } else if (hasCli) {
+      purposeParts.push('Command-line interface tool');
+    } else if (hasApi && hasWeb) {
+      purposeParts.push('Full-stack web application');
+    } else if (hasApi) {
+      purposeParts.push('API server');
+    } else if (hasWeb) {
+      purposeParts.push('Web application');
+    } else {
+      purposeParts.push('Software project');
+    }
+
+    // Add language context
+    if (languages.length > 0) {
+      purposeParts.push(`built with ${languages.slice(0, 2).join(' and ')}`);
+    }
+
+    // Add domain context if available
+    if (domainKeywords.length > 0) {
+      const topDomains = domainKeywords.slice(0, 3).join(', ');
+      purposeParts.push(`focusing on ${topDomains}`);
+    }
+
+    // Add architecture context if available
+    if (architectureKeywords.length > 0) {
+      purposeParts.push(`using ${architectureKeywords.slice(0, 2).join(' and ')}`);
+    }
+
+    return purposeParts.join(', ') + '.';
   }
 
   /**
@@ -643,8 +821,9 @@ export class ProjectHintsGenerator {
   private mapToWordFrequency(
     map: Map<string, { count: number; files: Set<string>; folders: Set<string> }>
   ): WordFrequency[] {
-    // Filter out generic/common words that are less informative
+    // Expanded filter for generic/common words that are less informative
     const genericWords = new Set([
+      // Basic verbs and prepositions
       'to',
       'name',
       'get',
@@ -685,35 +864,161 @@ export class ProjectHintsGenerator {
       'req',
       'tmp',
       'temp',
-      'test',
-      'spec',
-      'mock',
       'log',
       'console',
       'debug',
       'warn',
       'error',
       'info',
+      // Common test-related names
+      'test',
+      'spec',
+      'mock',
+      'describe',
+      'it',
+      'expect',
+      'assert',
+      'should',
+      'before',
+      'after',
+      'setup',
+      'teardown',
+      // Generic variable names
+      'result',
+      'results',
+      'output',
+      'input',
+      'args',
+      'params',
+      'options',
+      'config',
+      'settings',
+      'path',
+      'file',
+      'dir',
+      'folder',
+      'text',
+      'content',
+      'message',
+      'msg',
+      'str',
+      'num',
+      'arr',
+      'val',
+      'var',
+      'env',
+      'ctx',
+      'context',
+      'state',
+      'props',
+      'index',
+      'idx',
+      'length',
+      'len',
+      'size',
+      'count',
+      'total',
+      'sum',
+      'max',
+      'min',
+      'first',
+      'last',
+      'next',
+      'prev',
+      'current',
+      'previous',
+      'payload',
+      'response',
+      'request',
+      'query',
+      'body',
+      'headers',
+      'status',
+      'code',
+      'type',
+      'kind',
+      'mode',
+      'flag',
+      'enabled',
+      'disabled',
+      'valid',
+      'invalid',
+      'success',
+      'failure',
+      'failed',
+      'passed',
+      'true',
+      'false',
+      'null',
+      'undefined',
+      'and',
+      'or',
+      'not',
     ]);
 
+    // Test-related function prefixes/patterns to filter
+    const testPatterns = [
+      /^test[A-Z]/,
+      /^run[A-Z].*[Tt]est/,
+      /^mock[A-Z]/,
+      /^setup[A-Z]/,
+      /^teardown[A-Z]/,
+      /Test$/,
+      /Mock$/,
+    ];
+
     return Array.from(map.entries())
-      .filter(([word]) => {
-        // Filter out generic words, very short words, and words starting with underscore
-        return (
-          !genericWords.has(word.toLowerCase()) &&
-          word.length > 2 &&
-          !word.startsWith('_') &&
-          // Filter out words that are all uppercase (likely constants we don't want)
-          !(word === word.toUpperCase() && word.length < 6)
+      .filter(([word, data]) => {
+        const lower = word.toLowerCase();
+
+        // Filter out generic words
+        if (genericWords.has(lower)) return false;
+
+        // Filter out very short words
+        if (word.length <= 2) return false;
+
+        // Filter out words starting with underscore (private)
+        if (word.startsWith('_')) return false;
+
+        // Filter out words that are all uppercase (likely constants we don't want)
+        if (word === word.toUpperCase() && word.length < 6) return false;
+
+        // Filter out test-related function names
+        if (testPatterns.some(pattern => pattern.test(word))) return false;
+
+        // Filter out symbols that only appear in test folders
+        const folders = Array.from(data.folders);
+        const allInTests = folders.every(f =>
+          f.toLowerCase().includes('test') ||
+          f.toLowerCase().includes('spec') ||
+          f.toLowerCase().includes('__tests__')
         );
+        if (allInTests && folders.length > 0) return false;
+
+        return true;
       })
-      .map(([word, data]) => ({
-        word,
-        count: data.count,
-        files: Array.from(data.files),
-        folders: Array.from(data.folders),
-      }))
-      .sort((a, b) => b.count - a.count);
+      .map(([word, data]) => {
+        const folders = Array.from(data.folders);
+
+        // Calculate relevance score: production code > test code
+        const testFolderCount = folders.filter(f =>
+          f.toLowerCase().includes('test') ||
+          f.toLowerCase().includes('spec') ||
+          f.toLowerCase().includes('__tests__')
+        ).length;
+
+        const productionScore = folders.length - testFolderCount;
+
+        return {
+          word,
+          count: data.count,
+          files: Array.from(data.files),
+          folders,
+          _score: productionScore * 10 + data.count, // Weight production code 10x
+        };
+      })
+      .sort((a, b) => (b._score || 0) - (a._score || 0))
+      .map(({ _score, ...rest }) => rest); // Remove internal score field
   }
 
   /**
@@ -766,7 +1071,7 @@ export class ProjectHintsGenerator {
     let keywords: string[] = [];
     let confidence = 0.7;
 
-    // Common folder patterns
+    // Common folder patterns (expanded with more patterns)
     if (folderName.includes('api') || folderName.includes('route')) {
       purpose = 'API endpoints and routing logic';
       keywords = ['routes', 'endpoints', 'handlers', 'middleware'];
@@ -795,10 +1100,79 @@ export class ProjectHintsGenerator {
       purpose = 'Data models and schema definitions';
       keywords = ['models', 'schemas', 'data structures'];
       confidence = 0.85;
+    } else if (folderName.includes('tool')) {
+      purpose = 'Tool implementations and command handlers';
+      keywords = ['tools', 'commands', 'operations'];
+      confidence = 0.85;
+    } else if (folderName.includes('core')) {
+      purpose = 'Core functionality and business logic';
+      keywords = ['core', 'engine', 'foundation'];
+      confidence = 0.85;
+    } else if (folderName.includes('runtime')) {
+      purpose = 'Runtime components and execution logic';
+      keywords = ['runtime', 'execution', 'engine'];
+      confidence = 0.85;
+    } else if (folderName.includes('client') || folderName.includes('consumer')) {
+      purpose = 'Client interfaces and API consumers';
+      keywords = ['client', 'consumer', 'api calls'];
+      confidence = 0.8;
+    } else if (folderName.includes('middleware')) {
+      purpose = 'Middleware and request processing';
+      keywords = ['middleware', 'interceptors', 'processors'];
+      confidence = 0.85;
+    } else if (folderName.includes('controller')) {
+      purpose = 'Controllers and request handlers';
+      keywords = ['controllers', 'handlers', 'endpoints'];
+      confidence = 0.85;
+    } else if (folderName.includes('repository') || folderName.includes('repo')) {
+      purpose = 'Data access layer and repositories';
+      keywords = ['repositories', 'data access', 'persistence'];
+      confidence = 0.85;
+    } else if (folderName.includes('view') || folderName.includes('page')) {
+      purpose = 'Views and page components';
+      keywords = ['views', 'pages', 'ui'];
+      confidence = 0.85;
+    } else if (folderName.includes('hook')) {
+      purpose = 'React hooks and custom logic';
+      keywords = ['hooks', 'react', 'state management'];
+      confidence = 0.85;
+    } else if (folderName.includes('store') || folderName.includes('state')) {
+      purpose = 'State management and data stores';
+      keywords = ['state', 'store', 'redux', 'data management'];
+      confidence = 0.85;
+    } else if (folderName.includes('type')) {
+      purpose = 'Type definitions and interfaces';
+      keywords = ['types', 'interfaces', 'definitions'];
+      confidence = 0.85;
+    } else if (folderName.includes('constant')) {
+      purpose = 'Constants and configuration values';
+      keywords = ['constants', 'config', 'static values'];
+      confidence = 0.85;
+    } else if (folderName.includes('script')) {
+      purpose = 'Scripts and automation utilities';
+      keywords = ['scripts', 'automation', 'build'];
+      confidence = 0.8;
+    } else if (folderName.includes('lib') || folderName.includes('library')) {
+      purpose = 'Library code and shared modules';
+      keywords = ['library', 'shared', 'modules'];
+      confidence = 0.8;
+    } else if (folderName.includes('adapter') || folderName.includes('provider')) {
+      purpose = 'Adapters and external service providers';
+      keywords = ['adapters', 'providers', 'integrations'];
+      confidence = 0.85;
+    } else if (folderName.includes('formatter') || folderName.includes('format')) {
+      purpose = 'Data formatters and output processors';
+      keywords = ['formatters', 'processors', 'output'];
+      confidence = 0.85;
+    } else if (folderName.includes('analyzer') || folderName.includes('analysis')) {
+      purpose = 'Code analysis and processing logic';
+      keywords = ['analyzers', 'analysis', 'processing'];
+      confidence = 0.85;
     }
 
-    // Enhance confidence using file content analysis if confidence is low
-    if (confidence < 0.6 && !useAI) {
+    // Enhance confidence using file content analysis if confidence is low or purpose is unclear
+    // Always try content analysis first before AI or fallback
+    if (!purpose || confidence < 0.7) {
       try {
         const contentAnalysis = await this.analyzeContentForConfidence(files, folderName);
         if (contentAnalysis.purpose) {
@@ -814,7 +1188,7 @@ export class ProjectHintsGenerator {
       }
     }
 
-    // Use AI enhancement if available and purpose is unclear
+    // Use AI enhancement if available and purpose is still unclear
     if (useAI && this.openaiService && (confidence < 0.8 || !purpose)) {
       try {
         const aiAnalysis = await this.analyzeWithAI(folderPath, files);
@@ -831,11 +1205,21 @@ export class ProjectHintsGenerator {
       }
     }
 
-    // Fallback for unclear folders
+    // Intelligent fallback for unclear folders based on folder name patterns
     if (!purpose) {
-      purpose = `${languages.join('/')} files - ${files.length} files`;
-      keywords = [folderName, ...languages];
-      confidence = 0.4;
+      // Try to infer from folder name segments
+      const inferredPurpose = this.inferPurposeFromName(folderName);
+      if (inferredPurpose) {
+        purpose = inferredPurpose.purpose;
+        keywords = [...keywords, ...inferredPurpose.keywords];
+        confidence = inferredPurpose.confidence;
+      } else {
+        // Final fallback: use a more descriptive generic message
+        const langDisplay = languages.length > 0 ? languages.join('/') : 'code';
+        purpose = `${this.capitalize(folderName)} - ${langDisplay} files (${files.length} files)`;
+        keywords = [folderName, ...languages];
+        confidence = 0.4;
+      }
     }
 
     return {
@@ -1112,6 +1496,126 @@ Return JSON:
     const maxSnippetSize = 1000;
     const result = snippets.slice(0, 20).join('\n'); // Limit lines
     return result.length > maxSnippetSize ? result.substring(0, maxSnippetSize) + '...' : result;
+  }
+
+  /**
+   * Capitalize first letter of a string
+   */
+  private capitalize(str: string): string {
+    if (!str) return str;
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  /**
+   * Infer folder purpose from name patterns when other methods fail
+   */
+  private inferPurposeFromName(
+    folderName: string
+  ): { purpose: string; keywords: string[]; confidence: number } | null {
+    const lower = folderName.toLowerCase();
+
+    // Try to identify key terms in the folder name
+    const terms = lower.split(/[_\-\/\\]/);
+
+    // Check for common suffixes/patterns
+    if (terms.some(t => ['tools', 'tool'].includes(t))) {
+      return {
+        purpose: 'Tool implementations and utilities',
+        keywords: ['tools', 'utilities'],
+        confidence: 0.65,
+      };
+    }
+
+    if (terms.some(t => ['local', 'remote', 'cloud'].includes(t))) {
+      return {
+        purpose: `${this.capitalize(terms.find(t => ['local', 'remote', 'cloud'].includes(t))!)} modules and implementations`,
+        keywords: terms,
+        confidence: 0.6,
+      };
+    }
+
+    if (terms.some(t => ['debug', 'debugger'].includes(t))) {
+      return {
+        purpose: 'Debugging utilities and development tools',
+        keywords: ['debug', 'development'],
+        confidence: 0.7,
+      };
+    }
+
+    if (terms.some(t => ['common', 'shared'].includes(t))) {
+      return {
+        purpose: 'Shared code and common utilities',
+        keywords: ['shared', 'common'],
+        confidence: 0.65,
+      };
+    }
+
+    if (terms.some(t => ['index', 'main'].includes(t))) {
+      return {
+        purpose: 'Entry points and module exports',
+        keywords: ['entry', 'exports'],
+        confidence: 0.6,
+      };
+    }
+
+    if (terms.some(t => ['ai', 'ml', 'llm'].includes(t))) {
+      return {
+        purpose: 'AI/ML functionality and integrations',
+        keywords: ['ai', 'machine learning'],
+        confidence: 0.75,
+      };
+    }
+
+    if (terms.some(t => ['auth', 'authentication', 'authorization'].includes(t))) {
+      return {
+        purpose: 'Authentication and authorization logic',
+        keywords: ['auth', 'security'],
+        confidence: 0.8,
+      };
+    }
+
+    if (terms.some(t => ['db', 'database', 'data'].includes(t))) {
+      return {
+        purpose: 'Database operations and data management',
+        keywords: ['database', 'data'],
+        confidence: 0.75,
+      };
+    }
+
+    if (terms.some(t => ['embed', 'embedding', 'embeddings'].includes(t))) {
+      return {
+        purpose: 'Embedding generation and management',
+        keywords: ['embeddings', 'vectors'],
+        confidence: 0.8,
+      };
+    }
+
+    if (terms.some(t => ['compactor', 'compact'].includes(t))) {
+      return {
+        purpose: 'Code compaction and compression utilities',
+        keywords: ['compaction', 'compression'],
+        confidence: 0.75,
+      };
+    }
+
+    if (terms.some(t => ['skill', 'skills'].includes(t))) {
+      return {
+        purpose: 'Skill definitions and templates',
+        keywords: ['skills', 'capabilities'],
+        confidence: 0.75,
+      };
+    }
+
+    // If folder name suggests a feature/domain, use that
+    if (terms.length > 0 && terms[0].length > 3) {
+      return {
+        purpose: `${this.capitalize(terms.join(' '))} functionality`,
+        keywords: terms,
+        confidence: 0.5,
+      };
+    }
+
+    return null;
   }
 
   /**

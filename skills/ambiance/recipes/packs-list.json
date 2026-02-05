@@ -1,0 +1,9 @@
+{
+  "name": "packs-list",
+  "description": "List context packs.",
+  "defaults": {
+    "format": "json"
+  },
+  "command": "packs",
+  "args": ["list", "--json"]
+}

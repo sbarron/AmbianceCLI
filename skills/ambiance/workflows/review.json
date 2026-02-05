@@ -1,0 +1,23 @@
+{
+  "name": "review",
+  "description": "Collect focused context for reviewing a change or area.",
+  "guards": {
+    "maxTokens": 2000,
+    "json": true
+  },
+  "steps": [
+    {
+      "command": "context",
+      "args": [
+        "${query}",
+        "--json",
+        "--project-path",
+        "${projectPath}",
+        "--task-type",
+        "review",
+        "--max-tokens",
+        "2000"
+      ]
+    }
+  ]
+}

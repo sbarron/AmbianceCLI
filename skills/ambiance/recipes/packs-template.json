@@ -1,0 +1,9 @@
+{
+  "name": "packs-template",
+  "description": "Get a context pack JSON template.",
+  "defaults": {
+    "format": "json"
+  },
+  "command": "packs",
+  "args": ["template", "--json"]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "debug",
+  "description": "Extract local context and likely root causes from an error log.",
+  "guards": {
+    "maxTokens": 2000,
+    "json": true
+  },
+  "steps": [
+    {
+      "command": "debug",
+      "args": ["${logText}", "--json", "--project-path", "${projectPath}"]
+    }
+  ]
+}

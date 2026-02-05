@@ -1,0 +1,18 @@
+{
+  "name": "understand",
+  "description": "Build a concise understanding of a codebase area.",
+  "guards": {
+    "maxTokens": 2000,
+    "json": true
+  },
+  "steps": [
+    {
+      "command": "hints",
+      "args": ["--json", "--project-path", "${projectPath}", "--max-files", "50"]
+    },
+    {
+      "command": "context",
+      "args": ["${query}", "--json", "--project-path", "${projectPath}", "--max-tokens", "2000"]
+    }
+  ]
+}

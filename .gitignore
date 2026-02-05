@@ -61,4 +61,9 @@ Final_Release_Plan.md
 Reference_Documents/
 Reference_Documents/API_ENDPOINTS_REFERENCE.md
 Reference_Documents/future.md
+AmbianceCLI_Development_Plan.md
+SKILL_IMPROVEMENTS.md
 
+coverage/
+jest-results.json
+*.tgz

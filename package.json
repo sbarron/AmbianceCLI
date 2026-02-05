@@ -1,15 +1,13 @@
 {
-  "name": "@jackjackstudios/ambiance-mcp",
+  "name": "ambiance-cli",
   "version": "0.2.5",
-  "description": "MCP server for code context with semantic search, AI analysis and summary",
-  "main": "dist/src/index.js",
-  "types": "dist/src/index.d.ts",
+  "description": "CLI for code context with semantic search, AI analysis and summary",
+  "main": "dist/src/cli.js",
+  "types": "dist/src/cli.d.ts",
   "bin": {
-    "ambiance-mcp": "./dist/src/cli.js"
+    "ambiance": "./dist/src/cli.js"
   },
   "keywords": [
-    "mcp",
-    "mcp-server",
     "rag",
     "cli",
     "code-analysis",
@@ -26,19 +24,19 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sbarron/AmbianceMCP"
+    "url": "https://github.com/sbarron/AmbianceCLI"
   },
   "bugs": {
-    "url": "https://github.com/sbarron/AmbianceMCP/issues"
+    "url": "https://github.com/sbarron/AmbianceCLI/issues"
   },
-  "homepage": "https://github.com/sbarron/AmbianceMCP#readme",
+  "homepage": "https://github.com/sbarron/AmbianceCLI#readme",
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=8.0.0"
   },
   "scripts": {
-    "start": "node dist/src/index.js",
-    "dev": "ts-node src/index.ts",
+    "start": "node dist/src/cli.js --help",
+    "dev": "ts-node src/cli.ts --help",
     "build": "npm run create-build-lock && tsc --project tsconfig.json && npm run copy-facets-config && npm run copy-schemas && npm run remove-build-lock",
     "clean": "rimraf dist",
     "create-build-lock": "node -e \"require('fs').writeFileSync('.build-lock', 'BUILD_IN_PROGRESS')\"",
@@ -48,9 +46,11 @@
     "copy-schemas": "node -e \"const fs = require('fs'); const path = require('path'); const src = 'src/tools/localTools/schemas'; const dest = 'dist/src/tools/localTools/schemas'; fs.mkdirSync(dest, {recursive: true}); fs.readdirSync(src).forEach(file => { if (file.endsWith('.json')) fs.copyFileSync(path.join(src, file), path.join(dest, file)); });\"",
     "lint": "eslint src/ scripts/ --ext .ts,.js",
     "lint:fix": "eslint src/ scripts/ --ext .ts,.js --fix",
-    "format": "prettier --write \"src/**/*.{ts,js,json}\" \"tools/**/*.{ts,js,json}\" \"scripts/**/*.{ts,js,json}\" \"*.{json,md}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,js,json}\" \"tools/**/*.{ts,js,json}\" \"scripts/**/*.{ts,js,json}\" \"*.{json,md}\"",
-    "check": "npm run lint && npm run format:check && npm run test",
+    "format": "prettier --write \"src/**/*.{ts,js,json}\" \"scripts/**/*.{ts,js,json}\" \"*.{json,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,js,json}\" \"scripts/**/*.{ts,js,json}\" \"*.{json,md}\"",
+    "check": "npm run lint && npm run format:check && npm run verify:skills && npm run test",
+    "verify:skills": "node -r ts-node/register src/cli.ts skill verify --json",
+    "test:skills:workflows": "jest tests/skill-workflows.e2e.test.js",
     "test": "jest",
     "test:enhanced": "node tests/runTests.js",
     "test:verbose": "jest --verbose",
@@ -74,16 +74,15 @@
     "benchmark": "ts-node --esm scripts/benchmark-compactor.ts",
     "benchmark:current": "ts-node --esm scripts/benchmark-compactor.ts .",
     "test:compactor": "jest src/compactor/",
-    "publish:latest": "npm run build && npm publish",
-    "publish:beta": "npm run build && npm publish --tag beta",
-    "publish:alpha": "npm run build && npm publish --tag alpha"
+    "publish:latest": "npm run build && npm run verify:skills && npm publish",
+    "publish:beta": "npm run build && npm run verify:skills && npm publish --tag beta",
+    "publish:alpha": "npm run build && npm run verify:skills && npm publish --tag alpha"
   },
   "dependencies": {
     "@ast-grep/cli": "^0.39.5",
     "@babel/parser": "^7.28.0",
     "@babel/traverse": "^7.28.0",
     "@babel/types": "^7.28.2",
-    "@modelcontextprotocol/sdk": "^1.17.3",
     "@types/babel__traverse": "^7.28.0",
     "@types/uuid": "^10.0.0",
     "@xenova/transformers": "^2.17.2",

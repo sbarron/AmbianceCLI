@@ -100,7 +100,7 @@ These remain in scope and should be first-class in CLI:
 ## 5.2 Proposed Package Structure
 
 - `@jackjackstudios/ambiance-cli` (primary package)
-- `@jackjackstudios/ambiance-mcp-adapter` (optional compatibility package)
+- `@jackjackstudios/ambiance-cli-mcp-adapter` (optional compatibility package)
 
 Initial transition can keep one package with two entrypoints, then split when stable.
 
@@ -166,6 +166,12 @@ Purpose: make Agent Skill the preferred workflow layer.
 - Add examples for Codex-style and generic agent usage.
 - Add `ambiance skill verify` command to validate environment and command availability.
 
+### Progress Update (2026-02-05)
+- Completed: `skills/ambiance/README.md` with Codex-style and generic agent examples.
+- Completed: Workflow E2E coverage that executes all `skills/ambiance/workflows/*.json` steps through CLI with JSON assertions.
+- Completed: Skill validation wired into check/publish scripts (`verify:skills`) so invalid skill templates fail release flows.
+- Remaining for full phase exit: complete Phase 4 docs migration (root README CLI-first + migration guide).
+
 ### Exit Criteria
 - Skill documentation and templates are versioned with CLI release.
 - End-to-end workflows execute through CLI only.
@@ -179,6 +185,12 @@ Purpose: ship CLI-first while preserving MCP users temporarily.
 - Keep MCP adapter with deprecation notice and timeline.
 - Add mapping table from MCP tool names to CLI commands.
 - Provide compatibility examples for legacy users.
+
+### Progress Update (2026-02-05)
+- Completed: root `README.md` rewritten to CLI-first usage and command surface.
+- Completed: migration guide added (`MIGRATION.md`) with MCP -> CLI mapping and checklist.
+- Completed: `migrate mcp-map` documented prominently as the bridge for compatibility workflows.
+- Remaining for phase completion: keep README/migration docs in sync with final release messaging and deprecation timeline.
 
 ### Exit Criteria
 - CLI is default in README/install docs.

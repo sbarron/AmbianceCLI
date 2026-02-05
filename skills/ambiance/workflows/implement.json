@@ -1,0 +1,27 @@
+{
+  "name": "implement",
+  "description": "Gather implementation-relevant context and constraints before coding.",
+  "guards": {
+    "maxTokens": 2400,
+    "json": true
+  },
+  "steps": [
+    {
+      "command": "hints",
+      "args": ["--json", "--project-path", "${projectPath}", "--max-files", "100"]
+    },
+    {
+      "command": "context",
+      "args": [
+        "${query}",
+        "--json",
+        "--project-path",
+        "${projectPath}",
+        "--task-type",
+        "implement",
+        "--max-tokens",
+        "2400"
+      ]
+    }
+  ]
+}

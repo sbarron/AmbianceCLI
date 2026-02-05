@@ -165,6 +165,32 @@ describe('Logger', () => {
       );
     });
 
+    test('should not throw on circular context', () => {
+      const context: any = { a: 1 };
+      context.self = context;
+
+      expect(() => logger.info('Circular context', context)).not.toThrow();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[INFO] [Test] Circular context'),
+        expect.stringContaining('[Circular]')
+      );
+    });
+
+    test('should serialize Error objects in context', () => {
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const err: any = new Error('Boom');
+      err.code = 'E_BOOOM';
+
+      logger.error('Request failed', { err });
+
+      const call = errorSpy.mock.calls[0];
+      expect(call[0]).toEqual(expect.stringContaining('[ERROR] [Test] Request failed'));
+      expect(call[1]).toEqual(expect.stringContaining('"message":"Boom"'));
+      expect(call[1]).toEqual(expect.stringContaining('"code":"E_BOOOM"'));
+
+      errorSpy.mockRestore();
+    });
+
     test('should handle empty context', () => {
       logger.info('No context');
       expect(consoleSpy).toHaveBeenCalledWith(
@@ -289,6 +315,17 @@ describe('Logger', () => {
 
       expect(timestamp.getTime()).toBeGreaterThanOrEqual(before.getTime());
       expect(timestamp.getTime()).toBeLessThanOrEqual(after.getTime());
+    });
+
+    test('should serialize circular context in file logs', () => {
+      const context: any = { a: 1 };
+      context.self = context;
+
+      logger.info('Circular file log', context);
+
+      const appendCall = mockFs.appendFileSync.mock.calls[0];
+      const parsed = JSON.parse((appendCall[1] as string).trim());
+      expect(parsed.context.self).toBe('[Circular]');
     });
   });
 

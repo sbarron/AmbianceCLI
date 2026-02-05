@@ -25,6 +25,54 @@ export class Logger {
   private readonly maxSizeBytes = 10 * 1024 * 1024; // 10 MB
   private readonly maxArchives = 3;
 
+  private safeJsonStringify(value: unknown): string {
+    const seen = new WeakSet<object>();
+    try {
+      return JSON.stringify(value, (_key, v) => {
+        if (typeof v === 'bigint') return `${v.toString()}n`;
+        if (typeof v === 'function') return `[Function${v.name ? `: ${v.name}` : ''}]`;
+        if (typeof v === 'symbol') return v.toString();
+
+        if (v instanceof Error) {
+          const out: Record<string, unknown> = {
+            name: v.name,
+            message: v.message,
+          };
+          if (v.stack) out.stack = v.stack;
+
+          for (const key of Object.keys(v as any)) {
+            out[key] = (v as any)[key];
+          }
+          const cause = (v as any).cause;
+          if (cause !== undefined) out.cause = cause;
+          return out;
+        }
+
+        if (v && typeof v === 'object') {
+          if (seen.has(v as object)) return '[Circular]';
+          seen.add(v as object);
+
+          if (v instanceof Map) return { '[Map]': Array.from(v.entries()) };
+          if (v instanceof Set) return { '[Set]': Array.from(v.values()) };
+        }
+
+        return v;
+      });
+    } catch (err) {
+      const fallback = {
+        message: 'Failed to serialize log payload',
+        serializationError:
+          err instanceof Error ? { name: err.name, message: err.message } : String(err),
+        valueType: typeof value,
+      };
+      try {
+        return JSON.stringify(fallback);
+      } catch {
+        return '{"message":"Failed to serialize log payload"}';
+      }
+    }
+  }
+
   constructor(prefix: string = 'MCP') {
     this.prefix = prefix;
     this.logFilePath = this.initializeFileLogging();
@@ -72,7 +120,7 @@ export class Logger {
     };
 
     const formattedMessage = `[${timestamp}] ${level} [${this.prefix}] ${message}`;
-    const contextStr = context ? JSON.stringify(context) : '';
+    const contextStr = context ? this.safeJsonStringify(context) : '';
 
     // IMPORTANT: Never write logs to stdout in MCP stdio mode; use stderr only
     switch (level) {
@@ -103,7 +151,7 @@ export class Logger {
     if (this.logFilePath) {
       try {
         this.rotateLogsIfNeeded();
-        const line = JSON.stringify(logEntry) + '\n';
+        const line = this.safeJsonStringify(logEntry) + '\n';
         fs.appendFileSync(this.logFilePath, line, { encoding: 'utf8' });
       } catch {
         // best-effort; ignore file logging errors

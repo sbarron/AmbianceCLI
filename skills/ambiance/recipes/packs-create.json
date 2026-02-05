@@ -1,0 +1,16 @@
+{
+  "name": "packs-create",
+  "description": "Create a context pack.",
+  "defaults": {
+    "format": "json"
+  },
+  "command": "packs",
+  "args": [
+    "create",
+    "--json",
+    "--name",
+    "${name}",
+    "--query",
+    "${query}"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "hints",
+  "description": "Project structure analysis and navigation hints.",
+  "defaults": {
+    "maxFiles": 100,
+    "format": "json"
+  },
+  "command": "hints",
+  "args": [
+    "--json",
+    "--project-path",
+    "${projectPath}",
+    "--max-files",
+    "${maxFiles}"
+  ],
+  "outputSchema": {
+    "projectType": "string - detected project type (e.g. 'typescript-node', 'react')",
+    "entryPoints": "array - main entry files",
+    "keyDirectories": "object - source, tests, config paths",
+    "technologies": "array - detected frameworks and tools",
+    "fileCount": "number - total files analyzed",
+    "hints": "array - human-readable navigation hints"
+  },
+  "notes": [
+    "Does not require embeddings",
+    "Use this first when exploring a new codebase",
+    "maxFiles controls breadth: 50 (focused) to 200 (comprehensive)"
+  ]
+}

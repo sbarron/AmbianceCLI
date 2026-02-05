@@ -15,10 +15,20 @@
  * @context: Provides intelligent file discovery that identifies parseable source files while respecting ignore patterns and file size limits for efficient code analysis
  */
 
-// Use dynamic import for globby to support both CJS and ESM typings reliably
+function importEsmModule<TModule = unknown>(specifier: string): Promise<TModule> {
+  // In tests, prefer require() so Jest's moduleNameMapper/__mocks__ can intercept.
+  if (process.env.JEST_WORKER_ID) {
+    return Promise.resolve(require(specifier) as TModule);
+  }
+
+  // In CommonJS output, TypeScript may downlevel `import()` to `require()`.
+  // Using Function forces Node's native dynamic import, which works for ESM-only deps.
+  const importer = new Function('s', 'return import(s)') as (s: string) => Promise<TModule>;
+  return importer(specifier);
+}
+
 async function runGlobby(patterns: string[], options: any): Promise<string[]> {
-  const mod: any = await import('globby');
-  // Handle different import styles for globby
+  const mod: any = await importEsmModule<any>('globby');
   const fn = mod.globby || mod.default?.globby || mod.default || mod;
   if (typeof fn !== 'function') {
     throw new Error('Failed to import globby function');

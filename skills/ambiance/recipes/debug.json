@@ -1,0 +1,21 @@
+{
+  "name": "debug",
+  "description": "Extract likely related code and context from a log snippet.",
+  "defaults": {
+    "format": "json"
+  },
+  "command": "debug",
+  "args": ["${logText}", "--json", "--project-path", "${projectPath}"],
+  "outputSchema": {
+    "parsedError": "object - extracted error type, message, file, line",
+    "likelyFiles": "array - files most likely related to the error",
+    "relatedFunctions": "array - functions mentioned or relevant",
+    "context": "object - code context for likely files",
+    "suggestions": "array - potential fixes or investigation steps"
+  },
+  "notes": [
+    "Requires embeddings for best results",
+    "Works with stack traces, error messages, or log snippets",
+    "Automatically extracts file paths and line numbers from logs"
+  ]
+}

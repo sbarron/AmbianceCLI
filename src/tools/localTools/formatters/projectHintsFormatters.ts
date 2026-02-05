@@ -15,10 +15,12 @@ import * as path from 'path';
 /**
  * Main formatter dispatcher for project hints
  */
-export function formatProjectHints(hints: any, format: string): string {
+export function formatProjectHints(hints: any, format: string): string | any {
   switch (format) {
     case 'json':
-      return JSON.stringify(hints, null, 2);
+      // Return raw object for JSON format - let the CLI handle stringification
+      // This prevents double JSON encoding
+      return hints;
 
     case 'enhanced':
       return formatEnhancedProjectHints(hints);
@@ -35,10 +37,11 @@ export function formatProjectHints(hints: any, format: string): string {
 /**
  * Main formatter dispatcher for folder hints
  */
-export function formatFolderHints(folderHints: any, format: string): string {
+export function formatFolderHints(folderHints: any, format: string): string | any {
   switch (format) {
     case 'json':
-      return JSON.stringify(folderHints, null, 2);
+      // Return raw object for JSON format - let the CLI handle stringification
+      return folderHints;
 
     case 'structured':
       return formatStructuredFolderHints(folderHints);

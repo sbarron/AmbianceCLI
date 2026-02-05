@@ -4,20 +4,30 @@
  * Enhanced test runner with improved error reporting
  */
 
-import { spawn } from 'child_process';
-import path from 'path';
-import { fileURLToPath } from 'url';
+const { spawn } = require('child_process');
+const path = require('path');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, '../..');
+const projectRoot = path.resolve(__dirname, '..');
 
 console.log('🚀 Starting enhanced test run with improved error reporting...\n');
 
 // Run Jest with our custom reporter
-const jestProcess = spawn('npx', ['jest', '--config', 'jest.config.js'], {
+let command;
+let commandArgs;
+
+try {
+  const jestPackageJson = require.resolve('jest/package.json', { paths: [projectRoot] });
+  const jestBin = path.join(path.dirname(jestPackageJson), 'bin', 'jest.js');
+  command = process.execPath;
+  commandArgs = [jestBin, '--config', 'jest.config.js'];
+} catch {
+  command = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  commandArgs = ['jest', '--config', 'jest.config.js'];
+}
+
+const jestProcess = spawn(command, commandArgs, {
   stdio: 'pipe',
-  cwd: projectRoot
+  cwd: projectRoot,
 });
 
 let output = '';

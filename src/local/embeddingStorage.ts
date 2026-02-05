@@ -320,7 +320,7 @@ export class LocalEmbeddingStorage {
 
       logger.warn('⚠️ Database schema upgraded - all existing embeddings cleared');
       logger.info('💡 Backup saved at:', { path: backupPath });
-      logger.info('💡 Regenerate embeddings with: npx ambiance-mcp embeddings create');
+      logger.info('💡 Regenerate embeddings with: ambiance embeddings create');
     } catch (error) {
       logger.error('❌ Failed to upgrade schema', {
         error: error instanceof Error ? error.message : String(error),

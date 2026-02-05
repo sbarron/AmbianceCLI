@@ -1,0 +1,53 @@
+{
+  "name": "context",
+  "description": "Generate compact code context for a query.",
+  "defaults": {
+    "maxTokens": 2000,
+    "format": "json"
+  },
+  "command": "context",
+  "args": [
+    "${query}",
+    "--json",
+    "--project-path",
+    "${projectPath}",
+    "--max-tokens",
+    "${maxTokens}"
+  ],
+  "outputSchema": {
+    "json_format": {
+      "compactedContent": "string - markdown-formatted code summaries",
+      "metadata": "object - processing stats and compression ratio",
+      "usage": "string - token usage summary"
+    },
+    "index_format": {
+      "jumpTargets": "array - code locations with file:line, confidence, relevance, and snippet",
+      "byFile": "object - jump targets grouped by file path for easier navigation",
+      "answerDraft": "string - quick summary text",
+      "nextActions": "object - suggested files to examine and verification commands",
+      "evidence": "array - symbol@file:line references",
+      "metadata": "object - processing stats and roleDistribution counts"
+    }
+  },
+  "formats": [
+    {
+      "flag": "--format json",
+      "purpose": "Semantic compression for LLM context",
+      "returns": "Compacted code summaries with compression stats",
+      "useCases": ["Minimize tokens", "Build LLM prompts", "Code summaries"]
+    },
+    {
+      "flag": "--format index",
+      "purpose": "Code navigation with jump points",
+      "returns": "Structured locations with file:line, confidence, and next actions",
+      "useCases": ["IDE integration", "Agent navigation", "Jump to definition"]
+    }
+  ],
+  "notes": [
+    "Requires embeddings for best results (falls back to text search)",
+    "Use --task-type for implementation/review-focused context",
+    "Use --format index for navigation, --format json for context compression",
+    "Index format returns confidence scores (0.9=exports, 0.7=operations)",
+    "Higher maxTokens = more complete but slower and costlier"
+  ]
+}

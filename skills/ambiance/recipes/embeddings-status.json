@@ -1,0 +1,9 @@
+{
+  "name": "embeddings-status",
+  "description": "Embedding status for a project.",
+  "defaults": {
+    "format": "json"
+  },
+  "command": "embeddings",
+  "args": ["status", "--json", "--project-path", "${projectPath}"]
+}

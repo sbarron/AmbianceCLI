@@ -1,0 +1,67 @@
+{
+  "name": "ambiance",
+  "version": 1,
+  "commands": [
+    {
+      "name": "doctor",
+      "description": "Environment/readiness diagnostics",
+      "json": true
+    },
+    {
+      "name": "hints",
+      "description": "Project structure analysis and navigation hints",
+      "json": true
+    },
+    {
+      "name": "context",
+      "description": "Semantic code compaction and context generation",
+      "json": true
+    },
+    {
+      "name": "summary",
+      "description": "Single-file AST summary",
+      "json": true
+    },
+    {
+      "name": "debug",
+      "description": "Debug context analysis from error logs",
+      "json": true
+    },
+    {
+      "name": "grep",
+      "description": "AST-based structural code search",
+      "json": true
+    },
+    {
+      "name": "frontend",
+      "description": "Frontend code pattern analysis",
+      "json": true
+    },
+    {
+      "name": "embeddings",
+      "description": "Embedding management and workspace configuration",
+      "json": true
+    },
+    {
+      "name": "compare",
+      "description": "Multi-model response comparison",
+      "json": true
+    },
+    {
+      "name": "packs",
+      "description": "Context pack workflows (create/list/get/delete/template/ui)",
+      "json": true
+    },
+    {
+      "name": "migrate mcp-map",
+      "description": "Migration helpers (MCP -> CLI mapping)",
+      "json": true
+    },
+    {
+      "name": "skill verify",
+      "description": "Verify skill templates and CLI readiness",
+      "json": true
+    }
+  ],
+  "workflows": ["understand", "debug", "implement", "review"]
+}

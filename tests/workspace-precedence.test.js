@@ -22,7 +22,7 @@ describe('Workspace resolution precedence', () => {
   it('prefers WORKSPACE_FOLDER over AMBIANCE_BASE_DIR', () => {
     if (!getCurrentWorkspaceFolder) return;
 
-    process.env.WORKSPACE_FOLDER = 'C:/Dev/ambiance-mcp';
+    process.env.WORKSPACE_FOLDER = 'C:/Dev/ambiance-cli';
     process.env.AMBIANCE_BASE_DIR = 'C:/Some/Other/Dir';
 
     const folder = getCurrentWorkspaceFolder();

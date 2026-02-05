@@ -1,28 +1,36 @@
 #!/usr/bin/env node
 
 /**
- * Ambiance MCP Server CLI
+ * Ambiance CLI
  *
- * Provides command-line interface for the Ambiance MCP server and local tools.
- * Supports MCP server mode, help display, and direct tool execution.
+ * CLI-first local code context and analysis.
+ * MCP server mode is not supported in this entrypoint (compatibility is handled elsewhere).
  */
 
 import type { ProviderType } from './core/openaiService';
 import type { ModelTargetSpec } from './tools/aiTools/multiModelCompare';
+import type { ManageEmbeddingsAction } from './tools/localTools/embeddingManagement';
 
-const packageJson = require('../../package.json');
+import * as path from 'path';
 
-// Import local tool handlers for CLI access (using dynamic imports to avoid issues)
-const handleSemanticCompact = require('./tools/localTools/semanticCompact').handleSemanticCompact;
-const handleProjectHints = require('./tools/localTools/projectHints').handleProjectHints;
-const handleFileSummary = require('./tools/localTools/fileSummary').handleFileSummary;
-const handleFrontendInsights =
-  require('./tools/localTools/frontendInsights').handleFrontendInsights;
-const handleLocalDebugContext = require('./tools/debug/localDebugContext').handleLocalDebugContext;
-const handleAstGrep = require('./tools/localTools/astGrep').handleAstGrep;
-const handleManageEmbeddings =
-  require('./tools/localTools/embeddingManagement').handleManageEmbeddings;
-const { detectWorkspaceDirectory } = require('./tools/utils/pathUtils');
+function loadPackageJson(): any {
+  const candidates = [
+    path.resolve(__dirname, '..', '..', 'package.json'),
+    path.resolve(__dirname, '..', 'package.json'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      return require(candidate);
+    } catch {
+      // try next
+    }
+  }
+
+  return { version: 'unknown', license: 'unknown', repository: { url: 'unknown' } };
+}
+
+const packageJson = loadPackageJson();
 
 /**
  * Detect the appropriate project path for CLI operations
@@ -34,9 +42,11 @@ function detectProjectPath(): string {
   }
 
   // Use intelligent workspace detection
+  // Lazy-load to avoid heavy import-time side effects for --help/--version
+  const { detectWorkspaceDirectory } = require('./tools/utils/pathUtils');
   const detected = detectWorkspaceDirectory();
   if (detected && detected !== process.cwd()) {
-    console.log(`🔍 Auto-detected project directory: ${detected}`);
+    console.error(`Auto-detected project directory: ${detected}`);
     return detected;
   }
 
@@ -83,12 +93,6 @@ function estimateEmbeddingTime(fileCount: number, avgFileSize: number = 5000): s
 
 // Make this file a module
 export {};
-
-// Force enable local embeddings for CLI embedding operations
-if (!process.env.USE_LOCAL_EMBEDDINGS) {
-  process.env.USE_LOCAL_EMBEDDINGS = 'true';
-  console.log('🔧 Auto-enabled USE_LOCAL_EMBEDDINGS=true for embedding functionality');
-}
 
 type OptionValue = string | number | boolean | string[] | undefined;
 
@@ -372,15 +376,18 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
 // Parse command line arguments
 const args = process.argv.slice(2);
 
+const EXIT_CODES = {
+  OK: 0,
+  RUNTIME_ERROR: 1,
+  USAGE_ERROR: 2,
+} as const;
+
 // Global options
 const wantsExpandedHelp =
   args.includes('--expanded') || args.includes('--env-help') || args.includes('-E');
 const isHelp = args.includes('--help') || args.includes('-h');
-const isVersion = args.includes('--version') || args.includes('-v') || args.includes('version');
-const isServer = args.includes('--server') || args.includes('-s');
-
-// Auto-detect MCP server mode: when no args provided or running non-interactively
-const isMcpServerMode = isServer || (args.length === 0 && !process.stdout.isTTY);
+const isVersion = args.includes('--version') || args.includes('-V') || args.includes('version');
+const requestedServer = args.includes('--server') || args.includes('-s');
 
 // Tool commands
 const commands = [
@@ -391,6 +398,10 @@ const commands = [
   'debug',
   'grep',
   'compare',
+  'doctor',
+  'skill',
+  'migrate',
+  'packs',
   'embeddings',
   'ambiance_auto_detect_index',
   'ambiance_index_project',
@@ -408,13 +419,32 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === '-v') {
+      options.verbose = true;
+      continue;
+    }
+    if (arg === '-h') {
+      options.help = true;
+      continue;
+    }
+    if (arg === '-E') {
+      options.expanded = true;
+      continue;
+    }
+
     if (arg.startsWith('--')) {
       if (arg === '--project-path' && i + 1 < args.length) {
         options.projectPath = args[++i];
       } else if (arg === '--format' && i + 1 < args.length) {
         options.format = args[++i];
+      } else if (arg === '--json') {
+        options.format = 'json';
       } else if (arg === '--output' && i + 1 < args.length) {
         options.output = args[++i];
+      } else if (arg === '--embeddings') {
+        options.useEmbeddings = true;
+      } else if (arg === '--no-embeddings') {
+        options.useEmbeddings = false;
       } else if (arg === '--exclude-patterns' && i + 1 < args.length) {
         options.excludePatterns = args[++i]
           .split(',')
@@ -438,234 +468,99 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
 
 const { options: globalOptions, remaining } = parseGlobalOptions(args);
 
+// Strict JSON mode: keep stdout clean.
+if (globalOptions.format === 'json') {
+  process.env.LOG_LEVEL = 'error';
+}
+
+if (typeof globalOptions.useEmbeddings === 'boolean') {
+  process.env.USE_LOCAL_EMBEDDINGS = globalOptions.useEmbeddings ? 'true' : 'false';
+}
+
+function exitWithError(args: {
+  command?: string;
+  message: string;
+  options: GlobalOptions;
+  exitCode: number;
+}): never {
+  const { command, message, options, exitCode } = args;
+
+  if (options.format === 'json') {
+    console.log(
+      JSON.stringify(
+        {
+          success: false,
+          command,
+          error: message,
+          exitCode,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.error(message);
+  }
+
+  process.exit(exitCode);
+}
+
 /**
  * Display help information
  */
 function showHelp(options: { expanded?: boolean } = {}): void {
   const expanded = options.expanded === true;
-  console.log('🤖 Ambiance MCP Server');
-  console.log('======================');
+  console.log('Ambiance CLI');
+  console.log('===========');
   console.log('');
-  console.log('Intelligent code context and analysis for modern IDEs');
-  console.log('Use as an MCP tool in your IDE or directly from the command line');
-  console.log('');
-  console.log('📖 Documentation & Setup:');
-  console.log('  https://github.com/sbarron/AmbianceMCP');
-  console.log('');
-  console.log('🚀 Quick Start:');
-  console.log('  1. Install: npm install -g @jackjackstudios/ambiance-mcp');
-  console.log(
-    '  2. Create Embeddings (Recommended): Navigate to your project and generate local embeddings'
-  );
-  console.log('     cd /path/to/your/project');
-  console.log('     ambiance-mcp embeddings create');
-  console.log('     (Enables semantic search and improves context analysis. Takes 2-10 minutes)');
-  console.log('  3. Add to your MCP configuration (Cursor/Claude/other IDEs):');
-  console.log('');
-  console.log('     Windows:');
-  console.log('     "ambiance": {');
-  console.log('       "command": "cmd",');
-  console.log('       "args": [');
-  console.log('         "/c",');
-  console.log('         "npx",');
-  console.log('         "-y",');
-  console.log('         "@jackjackstudios/ambiance-mcp@latest"');
-  console.log('       ],');
-  console.log('       "env": {');
-  console.log('         "WORKSPACE_FOLDER": "C:\\\\DevelopmentDirectory\\\\YourProject",');
-  console.log('         "USE_LOCAL_EMBEDDINGS": "true",');
-  console.log('         "LOCAL_EMBEDDING_MODEL": "all-MiniLM-L6-v2"');
-  console.log('       }');
-  console.log('     }');
-  console.log('');
-  console.log('     macOS/Linux:');
-  console.log('     "ambiance": {');
-  console.log('       "command": "npx",');
-  console.log('       "args": [');
-  console.log('         "-y",');
-  console.log('         "@jackjackstudios/ambiance-mcp@latest"');
-  console.log('       ],');
-  console.log('       "env": {');
-  console.log('         "WORKSPACE_FOLDER": "/path/to/your/project",');
-  console.log('         "USE_LOCAL_EMBEDDINGS": "true",');
-  console.log('         "LOCAL_EMBEDDING_MODEL": "all-MiniLM-L6-v2"');
-  console.log('       }');
-  console.log('     }');
-  console.log('');
-  console.log('💡 Features:');
-  console.log('  • 60-80% token reduction through semantic compaction');
-  console.log('  • Multi-language support (TypeScript, JavaScript, Python, Go, Rust, C/C++, Java)');
-  console.log('  • Automatic local embeddings (generated on first tool use)');
-  console.log('  • Incremental file updates (3-min debounced watching)');
-  console.log('  • AI enhancement with OpenAI integration');
-  console.log('  • Cloud features for GitHub repository analysis');
-  console.log('');
-  console.log('🔧 Configuration:');
-  console.log('  Required:');
-  console.log('  • WORKSPACE_FOLDER: Path to your project directory');
-  console.log('');
-  console.log('  Optional (for AI features):');
-  console.log('  • OPENAI_API_KEY: Your OpenAI API key');
-  console.log(
-    '  • OPENAI_BASE_URL: Custom OpenAI API endpoint (default: https://api.openai.com/v1)'
-  );
-  console.log('');
-  console.log('  Optional (for cloud features):');
-  console.log('  • AMBIANCE_API_KEY: Your Ambiance cloud API key');
-  console.log('');
-  console.log('  Optional (for local embeddings):');
-  console.log('  • USE_LOCAL_EMBEDDINGS: "true" to enable local embeddings (default: true)');
-  console.log('  • LOCAL_EMBEDDING_MODEL: Model for local embeddings (default: all-MiniLM-L6-v2)');
-  console.log('  • SKIP_OPENAI_PROBE: "true" to skip OpenAI connectivity test');
-  console.log('  • SKIP_AMBIANCE_PROBE: "true" to skip Ambiance API health check');
-  console.log('');
-  console.log('  🤖 Embedding Behavior:');
-  console.log('  • First use: Auto-generates in background (non-blocking)');
-  console.log('  • File changes: Auto-updates via 3-minute debounced watching');
-  console.log('  • Manual control: Use manage_embeddings tool for workspace setup');
-  console.log('');
-  console.log('📦 Package Information:');
-  console.log(`  Version: ${packageJson.version}`);
-  console.log(`  License: ${packageJson.license}`);
-  console.log(`  Repository: ${packageJson.repository.url}`);
+  console.log('Local code context and analysis (CLI-first).');
   console.log('');
   console.log('Usage:');
-  console.log('  ambiance-mcp [options]');
-  console.log('  ambiance-mcp <tool> [tool-options] [global-options]');
+  console.log('  ambiance [options] <command> [command-options]');
   console.log('');
   console.log('Options:');
-  console.log('  --help, -h          Show this help message');
-  console.log('  --expanded, -E      Include environment variable defaults in help output');
-  console.log('  --env-help          Shortcut for --help --expanded');
-  console.log('  --version, -v       Show version information');
-  console.log('  --server, -s        Start MCP server (default mode)');
+  console.log('  --help, -h             Show this help message');
+  console.log('  --expanded, -E         Include environment variable defaults in help output');
+  console.log('  --env-help             Shortcut for --help --expanded');
+  console.log('  --version, -V          Show version information');
   console.log('');
-  console.log('Tools:');
-  console.log('  context             Semantic code compaction and context generation');
-  console.log('  hints               Project structure analysis and navigation hints');
-  console.log('  summary             Individual file analysis and symbol extraction');
-  console.log('  frontend            Frontend code pattern analysis');
-  console.log('  debug               Debug context analysis from error logs');
-  console.log('  grep                AST-based structural code search');
+  console.log('Commands:');
+  console.log('  context                Semantic code compaction and context generation');
+  console.log('  hints                  Project structure analysis and navigation hints');
+  console.log('  summary                Individual file analysis and symbol extraction');
+  console.log('  frontend               Frontend code pattern analysis');
+  console.log('  debug                  Debug context analysis from error logs');
+  console.log('  grep                   AST-based structural code search');
+  console.log('  compare                Multi-model response comparison');
   console.log(
-    '  embeddings          Embedding management and workspace configuration (status, create, update, recent_files, check_stale, find_duplicates, cleanup_duplicates)'
+    '  packs                  Context pack workflows (create/list/get/delete/template/ui)'
   );
-  console.log(
-    '                      find_duplicates: Find files with multiple embedding generations (stale data)'
-  );
-  console.log(
-    '                      cleanup_duplicates: Remove old embedding generations, keep only latest'
-  );
-  console.log('');
-  console.log('Indexing Tools (CLI-only):');
-  console.log('  ambiance_auto_detect_index    Auto-detect and index current project');
-  console.log('  ambiance_index_project        Index a specific project path');
-  console.log('  ambiance_reset_indexes        Reset/delete project indexes');
-  console.log('  ambiance_start_watching       Start file watching for changes');
-  console.log('  ambiance_stop_watching        Stop file watching');
-  console.log('  ambiance_get_indexing_status  Get indexing session status');
+  console.log('  embeddings             Embedding management and workspace configuration');
+  console.log('  doctor                 Environment/readiness diagnostics');
+  console.log('  skill                  Agent skill helpers (verify)');
+  console.log('  migrate                Migration helpers (MCP -> CLI)');
   console.log('');
   console.log('Global Options:');
   console.log('  --project-path <path>  Project directory path');
   console.log('  --format <format>      Output format (json, structured, compact)');
+  console.log('  --json                 Shortcut for --format json');
   console.log('  --output <file>        Write output to file');
+  console.log('  --embeddings           Force USE_LOCAL_EMBEDDINGS=true for this run');
+  console.log('  --no-embeddings        Force USE_LOCAL_EMBEDDINGS=false for this run');
   console.log('  --verbose, -v          Enable verbose output');
   console.log('');
-  console.log('Tool-Specific Options:');
-  console.log('  context:');
-  console.log('    --query <text>       Query for semantic analysis');
-  console.log('    --task-type <type>   Analysis type (understand, debug, trace, spec, test)');
-  console.log('    --max-tokens <num>   Maximum tokens in output (default: 3000)');
-  console.log('    --max-similar-chunks <num>  Max similar code chunks to include (default: 20)');
-  console.log('    --exclude-patterns <patterns>  Patterns to exclude (e.g., "*.md,docs/**")');
-  console.log('');
-  console.log('  hints:');
-  console.log('    --max-files <num>    Maximum files to analyze (default: 100)');
-  console.log('    --folder-path <path> Specific folder to analyze');
-  console.log('    --include-content    Include detailed file content analysis');
-  console.log('    --use-ai             Enable AI-powered insights (requires OPENAI_API_KEY)');
-  console.log('    --exclude-patterns <patterns>  Patterns to exclude (e.g., "*.test.js,docs/**")');
-  console.log('');
-  console.log('  summary:');
-  console.log('    --include-symbols    Include detailed symbol information');
-  console.log('    --max-symbols <num>  Maximum symbols to return (default: 20)');
-  console.log('');
-  console.log('  frontend:');
-  console.log('    --include-content    Include detailed file content analysis');
-  console.log('    --subtree <path>     Frontend directory to analyze (default: web/app)');
-  console.log('    --max-files <num>    Maximum files to analyze (default: 2000)');
-  console.log('');
-  console.log('  debug:');
-  console.log('    --max-matches <num>  Maximum matches to return (default: 20)');
-  console.log('');
-  console.log('  grep:');
-  console.log('    --language <lang>    Programming language (auto-detected if not provided)');
-  console.log('    --output-mode <mode> Output mode (content, files_with_matches, count)');
-  console.log('');
-  console.log('  embeddings:');
-  console.log('    --auto-generate      Auto-generate embeddings after workspace setup');
-  console.log('    --auto-fix           Automatically attempt repairs during operations');
-  console.log('    --batch-size <num>   Files to process per batch (default: 10)');
-  console.log('    --files <files>      Specific files to update (for update action)');
-  console.log(
-    '    --limit <num>        Maximum files to return (for recent_files action, default: 20)'
-  );
-  console.log('    --auto-update        Automatically update stale files (for check_stale action)');
-  console.log('');
   console.log('Examples:');
-  console.log('  # Semantic code compaction with custom options');
-  console.log(
-    '  ambiance-mcp context --query "How does authentication work?" --max-tokens 2000 --task-type understand'
-  );
+  console.log('  ambiance context --query "How does authentication work?" --max-tokens 2000');
+  console.log('  ambiance hints --json --project-path /path/to/project --max-files 200');
+  console.log('  ambiance packs create --name "arch" --query "Architecture overview" --json');
+  console.log('  ambiance doctor --json');
+  console.log('  ambiance skill verify --json');
+  console.log('  ambiance migrate mcp-map --json');
   console.log('');
-  console.log('  # Project analysis with JSON output and AI insights');
-  console.log(
-    '  ambiance-mcp hints --format json --project-path /path/to/project --use-ai true --max-files 1000'
-  );
-  console.log('');
-  console.log('  # File analysis with symbols and structured output');
-  console.log(
-    '  ambiance-mcp summary src/index.ts --include-symbols true --max-symbols 50 --format structured'
-  );
-  console.log('');
-  console.log('  # Frontend pattern analysis for specific directory');
-  console.log(
-    '  ambiance-mcp frontend --include-content true --subtree src/components --max-files 500'
-  );
-  console.log('');
-  console.log('  # Debug context analysis from error logs');
-  console.log(
-    '  ambiance-mcp debug "TypeError: Cannot read property \'map\' of undefined" --max-matches 10'
-  );
-  console.log('');
-  console.log('  # AST-based structural code search');
-  console.log(
-    '  ambiance-mcp grep "function $NAME($ARGS)" --language typescript --output-mode content'
-  );
-  console.log('');
-  console.log('  # Embedding management and status monitoring');
-  console.log('  ambiance-mcp embeddings status --project-path /my/workspace');
-  console.log('  ambiance-mcp embeddings create --project-path /my/workspace --auto-fix true');
-  console.log(
-    '  ambiance-mcp embeddings update --project-path /my/workspace --files "src/index.ts"'
-  );
-  console.log('  ambiance-mcp embeddings recent_files --project-path /my/workspace --limit 10');
-  console.log(
-    '  ambiance-mcp embeddings check_stale --project-path /my/workspace --auto-update true'
-  );
-  console.log('  ambiance-mcp embeddings find_duplicates --project-path /my/workspace');
-  console.log('  ambiance-mcp embeddings cleanup_duplicates --project-path /my/workspace');
-  console.log('');
-  console.log('  # Manual project indexing (CLI-only tools)');
-  console.log('  ambiance-mcp ambiance_start_watching --path /my/project');
-  console.log('  ambiance-mcp ambiance_auto_detect_index');
-  console.log('  ambiance-mcp ambiance_get_indexing_status');
-  console.log('');
-  console.log('  # Save output to file with verbose logging');
-  console.log('  ambiance-mcp hints --format json --output project-analysis.json --verbose');
-  console.log('');
-  console.log('For detailed setup instructions, visit:');
-  console.log('https://github.com/sbarron/AmbianceMCP#readme');
+  console.log('Package:');
+  console.log(`  Version: ${packageJson.version}`);
+  console.log(`  License: ${packageJson.license}`);
+  console.log(`  Repository: ${packageJson.repository.url}`);
   console.log('');
 
   if (expanded) {
@@ -673,7 +568,7 @@ function showHelp(options: { expanded?: boolean } = {}): void {
     console.log('');
     showEnvironmentHelp();
   } else {
-    console.log('Tip: Run `ambiance-mcp --help --expanded` to see environment defaults.');
+    console.log('Tip: Run `ambiance --help --expanded` to see environment defaults.');
     console.log('');
   }
 }
@@ -702,26 +597,7 @@ function showEnvironmentHelp(): void {
  * Display version information
  */
 function showVersion(): void {
-  console.log(`Ambiance MCP Server v${packageJson.version}`);
-}
-
-/**
- * Start the MCP server
- */
-async function startServer(): Promise<void> {
-  try {
-    // Import the MCP server dynamically to avoid loading it when just showing help
-    const { AmbianceMCPServer } = await import('./index.js');
-    const server = new AmbianceMCPServer();
-    await server.start();
-    // Keep the server running (this won't return until interrupted)
-  } catch (error) {
-    console.error(
-      '❌ Failed to start MCP server:',
-      error instanceof Error ? error.message : String(error)
-    );
-    process.exit(1);
-  }
+  console.log(`Ambiance CLI v${packageJson.version}`);
 }
 // Tool execution functions
 async function executeToolCommand(
@@ -733,82 +609,134 @@ async function executeToolCommand(
     let result: unknown;
 
     switch (command) {
-      case 'context':
+      case 'context': {
+        const { handleSemanticCompact } = await import('./runtime/context/semanticCompact');
+
+        const allowedKeys = [
+          'query',
+          'taskType',
+          'maxTokens',
+          'maxSimilarChunks',
+          'excludePatterns',
+        ];
+        const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
+        const parsed = parseToolSpecificArgs(toolArgs, allowedKeys);
+        const query =
+          typeof parsed.query === 'string' && parsed.query.trim().length > 0
+            ? parsed.query
+            : positionalArgs[0] || 'Analyze this project';
+
+        const { query: _query, ...parsedArgs } = parsed;
         result = await handleSemanticCompact({
-          query: toolArgs.find(arg => !arg.startsWith('--')) || 'Analyze this project',
+          query,
           projectPath: globalOptions.projectPath || detectProjectPath(),
           format: globalOptions.format || 'structured',
-          ...parseToolSpecificArgs(toolArgs, [
-            'query',
-            'taskType',
-            'maxTokens',
-            'maxSimilarChunks',
-            'excludePatterns',
-          ]),
-        });
-        break;
-
-      case 'hints':
-        result = await handleProjectHints({
-          projectPath: globalOptions.projectPath || detectProjectPath(),
-          format: globalOptions.format || 'compact',
-          ...parseToolSpecificArgs(toolArgs, [
-            'maxFiles',
-            'folderPath',
-            'includeContent',
-            'useAI',
-            'excludePatterns',
-          ]),
-        });
-        break;
-
-      case 'summary': {
-        const filePath = toolArgs.find(arg => !arg.startsWith('--'));
-        if (!filePath) {
-          console.error('Error: filePath is required for summary command');
-          process.exit(1);
-        }
-        result = await handleFileSummary({
-          filePath,
-          format: globalOptions.format || 'structured',
-          ...parseToolSpecificArgs(toolArgs, ['includeSymbols', 'maxSymbols']),
+          ...parsedArgs,
         });
         break;
       }
 
-      case 'frontend':
+      case 'hints': {
+        const { handleProjectHints } = await import('./runtime/hints/projectHints');
+
+        const allowedKeys = [
+          'maxFiles',
+          'folderPath',
+          'includeContent',
+          'useAI',
+          'excludePatterns',
+        ];
+        const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
+        result = await handleProjectHints({
+          projectPath: globalOptions.projectPath || detectProjectPath(),
+          format: globalOptions.format || 'compact',
+          ...parsedArgs,
+        });
+        break;
+      }
+
+      case 'summary': {
+        const { handleFileSummary } = await import('./runtime/summary/fileSummary');
+
+        const allowedKeys = ['includeSymbols', 'maxSymbols'];
+        const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
+        const filePath = positionalArgs[0];
+        if (!filePath) {
+          exitWithError({
+            command: 'summary',
+            message: 'filePath is required for summary command',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+
+        const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
+        result = await handleFileSummary({
+          filePath,
+          format: globalOptions.format || 'structured',
+          ...parsedArgs,
+        });
+        break;
+      }
+
+      case 'frontend': {
+        const { handleFrontendInsights } = await import('./runtime/frontend/frontendInsights');
+
+        const allowedKeys = ['includeContent', 'subtree', 'maxFiles'];
+        const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleFrontendInsights({
           projectPath: globalOptions.projectPath || detectProjectPath(),
           format: globalOptions.format || 'structured',
-          ...parseToolSpecificArgs(toolArgs, ['includeContent', 'subtree', 'maxFiles']),
+          ...parsedArgs,
         });
         break;
+      }
 
       case 'debug': {
-        const logText = toolArgs.find(arg => !arg.startsWith('--'));
+        const { handleLocalDebugContext } = await import('./runtime/debug/localDebugContext');
+
+        const allowedKeys = ['maxMatches'];
+        const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
+        const logText = positionalArgs[0];
         if (!logText) {
-          console.error('Error: logText is required for debug command');
-          process.exit(1);
+          exitWithError({
+            command: 'debug',
+            message: 'logText is required for debug command',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
         }
+
+        const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleLocalDebugContext({
           logText,
           projectPath: globalOptions.projectPath || detectProjectPath(),
           format: globalOptions.format || 'structured',
-          ...parseToolSpecificArgs(toolArgs, ['maxMatches']),
+          ...parsedArgs,
         });
         break;
       }
 
       case 'grep': {
-        const pattern = toolArgs.find(arg => !arg.startsWith('--'));
+        const { handleAstGrep } = await import('./runtime/grep/astGrep');
+
+        const allowedKeys = ['language', 'outputMode'];
+        const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
+        const pattern = positionalArgs[0];
         if (!pattern) {
-          console.error('Error: pattern is required for grep command');
-          process.exit(1);
+          exitWithError({
+            command: 'grep',
+            message: 'pattern is required for grep command',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
         }
+
+        const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleAstGrep({
           pattern,
           projectPath: globalOptions.projectPath || detectProjectPath(),
-          ...parseToolSpecificArgs(toolArgs, ['language', 'outputMode']),
+          ...parsedArgs,
         });
         break;
       }
@@ -840,8 +768,12 @@ async function executeToolCommand(
             : undefined) || positionalArgs[positionalArgs.length - 1];
 
         if (!promptCandidate) {
-          console.error('Error: prompt is required for compare command');
-          process.exit(1);
+          exitWithError({
+            command: 'compare',
+            message: 'prompt is required for compare command',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
         }
 
         let modelsInput: string | undefined;
@@ -863,16 +795,23 @@ async function executeToolCommand(
         try {
           modelSpecs = parseModelSpecsInput(modelsInput);
         } catch (parseError) {
-          console.error(
-            'Error parsing models:',
-            parseError instanceof Error ? parseError.message : String(parseError)
-          );
-          process.exit(1);
+          exitWithError({
+            command: 'compare',
+            message: `Error parsing models: ${
+              parseError instanceof Error ? parseError.message : String(parseError)
+            }`,
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
         }
 
         if (modelSpecs.length === 0) {
-          console.error('Error: at least one model must be provided (e.g. openai:gpt-5)');
-          process.exit(1);
+          exitWithError({
+            command: 'compare',
+            message: 'at least one model must be provided (e.g. openai:gpt-5)',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
         }
 
         const { runMultiModelComparison, formatComparisonResultMarkdown } = await import(
@@ -896,9 +835,281 @@ async function executeToolCommand(
         break;
       }
 
+      case 'doctor': {
+        const { runDoctor } = await import('./runtime/doctor');
+        result = await runDoctor({
+          detectedProjectPath: globalOptions.projectPath || detectProjectPath(),
+        });
+        break;
+      }
+
+      case 'skill': {
+        const subcommand = toolArgs.find(arg => !arg.startsWith('--')) || 'verify';
+
+        if (subcommand !== 'verify') {
+          exitWithError({
+            command: 'skill',
+            message: `Unknown skill subcommand: ${subcommand} (supported: verify)`,
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+
+        const { runSkillVerify } = await import('./runtime/skill/verify');
+        const report = await runSkillVerify({
+          detectedProjectPath: globalOptions.projectPath || detectProjectPath(),
+          availableCommands: commands,
+        });
+        result = report;
+
+        if (!report.success) {
+          process.exitCode = EXIT_CODES.RUNTIME_ERROR;
+        }
+
+        break;
+      }
+
+      case 'migrate': {
+        const subcommand = toolArgs.find(arg => !arg.startsWith('--')) || 'mcp-map';
+
+        if (subcommand !== 'mcp-map') {
+          exitWithError({
+            command: 'migrate',
+            message: `Unknown migrate subcommand: ${subcommand} (supported: mcp-map)`,
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+
+        const { getMcpToolMigrationMap } = await import('./runtime/migrate/mcpToolMap');
+        result = {
+          success: true,
+          timestamp: new Date().toISOString(),
+          map: getMcpToolMigrationMap(),
+        };
+        break;
+      }
+
+      case 'packs': {
+        const positionalArgs = toolArgs.filter(arg => !arg.startsWith('--'));
+        const subcommand = positionalArgs[0] || 'list';
+        const identifier = positionalArgs[1];
+
+        const parsed = parseToolSpecificArgs(toolArgs, [
+          'name',
+          'query',
+          'taskType',
+          'maxTokens',
+          'useEmbeddings',
+          'excludePatterns',
+          'notes',
+          'packsDir',
+          'id',
+        ]);
+
+        const projectPath = globalOptions.projectPath || detectProjectPath();
+        const packsDir = typeof parsed.packsDir === 'string' ? parsed.packsDir : undefined;
+        const resolvedIdentifier =
+          (typeof parsed.id === 'string' && parsed.id.length > 0 ? parsed.id : undefined) ||
+          identifier;
+
+        const {
+          createContextPack,
+          deleteContextPack,
+          getContextPack,
+          getContextPackTemplate,
+          listContextPacks,
+          resolvePacksDir,
+        } = await import('./runtime/packs');
+
+        if (subcommand === 'template') {
+          const template = getContextPackTemplate();
+          result = {
+            success: true,
+            timestamp: new Date().toISOString(),
+            template,
+          };
+          break;
+        }
+
+        if (subcommand === 'list') {
+          const listed = listContextPacks({ projectPath, packsDir });
+          result = {
+            success: true,
+            timestamp: new Date().toISOString(),
+            packsDir: listed.packsDir,
+            packs: listed.packs,
+            content:
+              listed.packs.length === 0
+                ? `No context packs found in ${listed.packsDir}`
+                : `Found ${listed.packs.length} context pack(s) in ${listed.packsDir}`,
+          };
+          break;
+        }
+
+        if (subcommand === 'get') {
+          if (!resolvedIdentifier) {
+            exitWithError({
+              command: 'packs',
+              message: 'packs get requires an identifier (id or name)',
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
+          const fetched = getContextPack({ identifier: resolvedIdentifier, projectPath, packsDir });
+          result = {
+            success: true,
+            timestamp: new Date().toISOString(),
+            packsDir: fetched.packsDir,
+            pack: fetched.pack,
+          };
+          break;
+        }
+
+        if (subcommand === 'delete') {
+          if (!resolvedIdentifier) {
+            exitWithError({
+              command: 'packs',
+              message: 'packs delete requires an identifier (id or name)',
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
+          const deleted = deleteContextPack({
+            identifier: resolvedIdentifier,
+            projectPath,
+            packsDir,
+          });
+          result = {
+            success: deleted.deleted,
+            timestamp: new Date().toISOString(),
+            packsDir: deleted.packsDir,
+            deleted: deleted.deleted,
+            filePath: deleted.filePath,
+            content: deleted.deleted
+              ? `Deleted context pack: ${resolvedIdentifier}`
+              : `Context pack not found: ${resolvedIdentifier}`,
+          };
+
+          if (!deleted.deleted) {
+            process.exitCode = EXIT_CODES.USAGE_ERROR;
+          }
+
+          break;
+        }
+
+        if (subcommand === 'create') {
+          const name = typeof parsed.name === 'string' ? parsed.name : undefined;
+          const query = typeof parsed.query === 'string' ? parsed.query : undefined;
+          if (!name || !query) {
+            exitWithError({
+              command: 'packs',
+              message: 'packs create requires --name and --query',
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
+          const created = createContextPack({
+            name,
+            query,
+            projectPath,
+            packsDir,
+            taskType: typeof parsed.taskType === 'string' ? parsed.taskType : undefined,
+            maxTokens: typeof parsed.maxTokens === 'number' ? parsed.maxTokens : undefined,
+            useEmbeddings:
+              typeof parsed.useEmbeddings === 'boolean' ? parsed.useEmbeddings : undefined,
+            excludePatterns: Array.isArray(parsed.excludePatterns)
+              ? parsed.excludePatterns
+              : undefined,
+            notes: typeof parsed.notes === 'string' ? parsed.notes : undefined,
+          });
+
+          result = {
+            success: true,
+            timestamp: new Date().toISOString(),
+            packsDir: resolvePacksDir({ projectPath, packsDir }),
+            pack: created.pack,
+            filePath: created.filePath,
+            content: `Created context pack "${created.pack.name}" (${created.pack.id})`,
+          };
+          break;
+        }
+
+        if (subcommand === 'ui') {
+          if (globalOptions.format === 'json' || !process.stdout.isTTY) {
+            exitWithError({
+              command: 'packs',
+              message:
+                'packs ui requires an interactive TTY (re-run without --format json or --json)',
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
+          const readline = require('readline');
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+          const ask = (q: string) =>
+            new Promise<string>(resolve => rl.question(q, (answer: string) => resolve(answer)));
+
+          const name = (await ask('Pack name: ')).trim();
+          const query = (await ask('Query: ')).trim();
+          const taskType = (await ask('Task type (optional, default "understand"): ')).trim();
+          rl.close();
+
+          if (!name || !query) {
+            exitWithError({
+              command: 'packs',
+              message: 'packs ui requires a non-empty name and query',
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
+          const created = createContextPack({
+            name,
+            query,
+            projectPath,
+            packsDir,
+            taskType: taskType.length > 0 ? taskType : 'understand',
+          });
+
+          result = {
+            success: true,
+            timestamp: new Date().toISOString(),
+            packsDir: resolvePacksDir({ projectPath, packsDir }),
+            pack: created.pack,
+            filePath: created.filePath,
+            content: `Created context pack "${created.pack.name}" (${created.pack.id}) at ${created.filePath}`,
+          };
+          break;
+        }
+
+        exitWithError({
+          command: 'packs',
+          message: `Unknown packs subcommand: ${subcommand} (supported: create, list, get, delete, template, ui)`,
+          options: globalOptions,
+          exitCode: EXIT_CODES.USAGE_ERROR,
+        });
+
+        break;
+      }
+
       case 'embeddings': {
-        const action = toolArgs.find(arg => !arg.startsWith('--')) || 'status';
+        if (process.env.USE_LOCAL_EMBEDDINGS === undefined) {
+          process.env.USE_LOCAL_EMBEDDINGS = 'true';
+        }
+
+        const { handleManageEmbeddings } = await import('./tools/localTools/embeddingManagement');
+        const action = (toolArgs.find(arg => !arg.startsWith('--')) ||
+          'status') as ManageEmbeddingsAction;
         let projectIdentifier: string | undefined;
+
+        const promptArgs = parseToolSpecificArgs(toolArgs, ['autoUpdate', 'force']);
+        const skipConfirmation = promptArgs.force === true;
 
         // Extract projectIdentifier for actions that need it as a positional argument
         if (action === 'project_details' || action === 'delete_project') {
@@ -914,7 +1125,17 @@ async function executeToolCommand(
         }
 
         // Special handling for create action - require confirmation
-        if (action === 'create') {
+        if (action === 'create' && !skipConfirmation) {
+          if (globalOptions.format === 'json' || !process.stdout.isTTY) {
+            exitWithError({
+              command: 'embeddings',
+              message:
+                'embeddings create requires interactive confirmation (re-run without --format json, or pass --force true to skip confirmation)',
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
           const projectPath = globalOptions.projectPath || process.cwd();
 
           // Wait a moment for initialization messages to complete, then show clear confirmation
@@ -953,7 +1174,7 @@ async function executeToolCommand(
           console.log(`⏱️  Estimated Time: ${estimatedTime}`);
           console.log('💾 Storage: Embeddings will be stored locally in ~/.ambiance/');
           console.log('🔄 Process: Will analyze all code files and generate vector embeddings');
-          console.log('📈 Progress: Can be monitored with "ambiance-mcp embeddings status"');
+          console.log('📈 Progress: Can be monitored with "ambiance embeddings status"');
           console.log('='.repeat(70));
           console.log('⚠️  This operation cannot be easily undone.');
           console.log('');
@@ -1016,11 +1237,23 @@ async function executeToolCommand(
         if (action === 'check_stale') {
           const projectPath = globalOptions.projectPath || detectProjectPath();
 
-          // Always show which project is being checked
-          console.log(`\n🔍 Checking stale files in: ${projectPath}`);
+          if (globalOptions.format !== 'json') {
+            // Always show which project is being checked
+            console.log(`\n🔍 Checking stale files in: ${projectPath}`);
+          }
 
           // Require confirmation for autoUpdate
           if (parsedArgs.autoUpdate) {
+            if (globalOptions.format === 'json' || !process.stdout.isTTY) {
+              exitWithError({
+                command: 'embeddings',
+                message:
+                  'embeddings check_stale --auto-update requires interactive confirmation (re-run without --format json, or omit --auto-update)',
+                options: globalOptions,
+                exitCode: EXIT_CODES.USAGE_ERROR,
+              });
+            }
+
             console.log('\n' + '='.repeat(70));
             console.log('🔄 STALE FILE AUTO-UPDATE CONFIRMATION');
             console.log('='.repeat(70));
@@ -1069,12 +1302,20 @@ async function executeToolCommand(
       case 'ambiance_start_watching':
       case 'ambiance_stop_watching':
       case 'ambiance_get_indexing_status': {
+        console.error(
+          'Note: ambiance_* commands are compatibility-only (MCP adapter) and may be removed in a future release.'
+        );
+
         // Handle ambiance tools
         const { ambianceHandlers } = await import('./tools/ambianceTools');
         const handler = ambianceHandlers[command];
         if (!handler) {
-          console.error(`Handler not found for ambiance tool: ${command}`);
-          process.exit(1);
+          exitWithError({
+            command,
+            message: `Handler not found for command: ${command}`,
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
         }
 
         result = await handler({
@@ -1085,24 +1326,42 @@ async function executeToolCommand(
       }
 
       default:
-        console.error(`Unknown tool command: ${command}`);
-        process.exit(1);
+        exitWithError({
+          command,
+          message: `Unknown command: ${command}`,
+          options: globalOptions,
+          exitCode: EXIT_CODES.USAGE_ERROR,
+        });
+    }
+
+    if (globalOptions.format === 'json') {
+      result = normalizeJsonResult(command, result);
+
+      if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+        const exitCode = (result as any).exitCode;
+        if (typeof exitCode === 'number' && Number.isFinite(exitCode) && exitCode !== 0) {
+          process.exitCode = exitCode;
+        }
+      }
     }
 
     // Handle output
     const output = formatToolOutput(result, globalOptions);
     if (globalOptions.output) {
       require('fs').writeFileSync(globalOptions.output, output);
-      console.log(`Output written to ${globalOptions.output}`);
+      console.error(`Output written to ${globalOptions.output}`);
     } else {
       console.log(output);
     }
   } catch (error) {
-    console.error(
-      `Error executing ${command} command:`,
-      error instanceof Error ? error.message : String(error)
-    );
-    process.exit(1);
+    exitWithError({
+      command,
+      message: `Error executing ${command} command: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      options: globalOptions,
+      exitCode: EXIT_CODES.RUNTIME_ERROR,
+    });
   }
 }
 
@@ -1219,6 +1478,70 @@ function parseToolSpecificArgs(args: string[], allowedKeys: string[]): ToolArgMa
   return parsed;
 }
 
+function extractPositionalArgs(args: string[], allowedKeys: string[]): string[] {
+  const allowed = new Set(allowedKeys.map(key => key.replace(/-/g, '').toLowerCase()));
+  const positional: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg.startsWith('--')) {
+      const key = arg.replace('--', '').replace(/-/g, '').toLowerCase();
+
+      const isRecognized = allowed.has(key);
+      const hasValue = i + 1 < args.length && !args[i + 1].startsWith('--');
+
+      // Skip recognized flags and their values.
+      // For unknown flags, also skip a following value (best-effort to avoid mis-parsing).
+      if (isRecognized && hasValue) {
+        i += 1;
+      } else if (!isRecognized && hasValue) {
+        i += 1;
+      }
+
+      continue;
+    }
+
+    positional.push(arg);
+  }
+
+  return positional;
+}
+
+function normalizeJsonResult(command: string, result: unknown): unknown {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+    return {
+      success: true,
+      command,
+      exitCode: EXIT_CODES.OK,
+      result,
+    };
+  }
+
+  const record = result as Record<string, unknown>;
+  const hasSuccess = Object.prototype.hasOwnProperty.call(record, 'success');
+  const hasError = typeof record.error === 'string' && record.error.trim().length > 0;
+  const success = hasSuccess ? Boolean(record.success) : !hasError;
+
+  const hasExitCode =
+    Object.prototype.hasOwnProperty.call(record, 'exitCode') &&
+    typeof record.exitCode === 'number' &&
+    Number.isFinite(record.exitCode);
+
+  const exitCode = hasExitCode
+    ? Number(record.exitCode)
+    : success
+      ? EXIT_CODES.OK
+      : EXIT_CODES.RUNTIME_ERROR;
+
+  return {
+    ...(hasSuccess ? {} : { success }),
+    ...(Object.prototype.hasOwnProperty.call(record, 'command') ? {} : { command }),
+    ...(hasExitCode ? {} : { exitCode }),
+    ...record,
+  };
+}
+
 function formatToolOutput(result: unknown, options: GlobalOptions): string {
   if (options.format === 'json') {
     return JSON.stringify(result ?? null, null, 2);
@@ -1257,9 +1580,13 @@ async function main() {
   } else if (isVersion) {
     showVersion();
     process.exit(0);
-  } else if (isMcpServerMode) {
-    // Start MCP server - this will run indefinitely until interrupted
-    await startServer();
+  } else if (requestedServer) {
+    exitWithError({
+      message:
+        'MCP server mode has been removed from this package. Use CLI commands (try `ambiance --help`).',
+      options: globalOptions,
+      exitCode: EXIT_CODES.USAGE_ERROR,
+    });
   } else if (isToolCommand && remaining.length > 0) {
     // Execute tool command
     const command = remaining[0];
@@ -1267,9 +1594,17 @@ async function main() {
     await executeToolCommand(command, toolArgs, globalOptions);
   } else {
     // Fallback to help for unrecognized arguments
+    if (globalOptions.format === 'json') {
+      exitWithError({
+        message: 'Unrecognized arguments. Use --help for usage information.',
+        options: globalOptions,
+        exitCode: EXIT_CODES.USAGE_ERROR,
+      });
+    }
+
     console.log('Unrecognized arguments. Use --help for usage information.\n');
     showHelp();
-    process.exit(1);
+    process.exit(EXIT_CODES.USAGE_ERROR);
   }
 }
 
