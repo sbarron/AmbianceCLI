@@ -1,5 +1,5 @@
 {
-  "name": "ambiance-cli",
+  "name": "@jackjackstudios/ambiance-cli",
   "version": "0.3.0",
   "description": "CLI for code context with semantic search, AI analysis and summary",
   "main": "dist/src/cli.js",
