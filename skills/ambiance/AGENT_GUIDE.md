@@ -1,448 +1,267 @@
 # Ambiance Agent Quick Reference
 
-Fast decision-making guide for agents using the Ambiance CLI.
+Fast decision guide for agents using the `ambiance` CLI.
 
-## Command Selection Flow
+## Session Start
 
-```
-User Request
-    │
-    ├─ "How does X work?" / "Explain Y" → context
-    │
-    ├─ "What's in this project?" / "Show me around" → hints
-    │
-    ├─ "Error: ..." / "Why is it failing?" → debug
-    │
-    ├─ "Find all functions named X" / "Where is pattern Y?" → grep
-    │
-    ├─ "What's in this file?" → summary
-    │
-    ├─ "Analyze the UI" / "How are components structured?" → frontend
-    │
-    └─ "Is everything set up?" → doctor
-```
+1. `ambiance doctor --json`
+2. `ambiance embeddings status --json --project-path <path>`
+3. If embeddings are missing: `ambiance embeddings create --json --project-path <path> --force true`
+4. **Initial Orientation (IMPORTANT - Read This First)**:
+   ```bash
+   # Start with manifest for quick file/function overview
+   ambiance manifest --exports-only --max-files 50 --format flat --json --project-path <path>
 
-## Command Decision Matrix
+   # Then get project structure
+   ambiance hints --json --project-path <path> --max-files 100
+   ```
 
-| User Intent | Keywords | Command | Typical Params |
-|-------------|----------|---------|----------------|
-| Understand codebase | "how", "what", "explain", "where" | `context` | `--max-tokens 2000-5000` |
-| First exploration | "overview", "structure", "architecture" | `hints` | `--max-files 50-100` |
-| Debug error | "error", "failing", "broken", "exception" | `debug` | (error log as query) |
-| Find pattern | "find all", "where is", "search for" | `grep` | AST pattern |
-| File overview | "what's in [file]", "summary of [file]" | `summary` | (file path) |
-| UI analysis | "components", "frontend", "UI", "React" | `frontend` | `--subtree src` |
-| Check setup | "ready?", "working?", "installed?" | `doctor` | (no params) |
-| Pre-implement | "add feature", "implement", "create" | `hints` → `context --task-type implement` | |
-| Code review | "review", "check", "analyze quality" | `context --task-type review` | `--max-tokens 5000+` |
+See **"Initial Project Discovery"** section below for multi-pass context strategy.
 
-## Workflow Patterns
+## Choose The Right Command
 
-### Pattern 1: New Codebase Exploration
+- **Quick file/function listing**: `ambiance manifest --exports-only --json --project-path <path>` (NEW!)
+- Understand feature or architecture: `ambiance context "<query>" --json --project-path <path>`
+- Get project overview: `ambiance hints --json --project-path <path>`
+- Debug from logs: `ambiance debug "<log text>" --json --project-path <path>`
+- Structural code search (AST-only): `ambiance grep "<ast pattern>" --json --project-path <path>`
+- File summary: `ambiance summary <file> --json`
+- Frontend mapping: `ambiance frontend --json --project-path <path>`
 
-**Trigger**: User mentions unfamiliar code or asks general questions
+## Search Routing Rules
 
+Use this order when embeddings/index are available:
+
+1. Semantic understanding first (default format, symbol-anchored query):
+   `ambiance context "<symbol-anchored query>" --json --project-path <path> --auto-sync`
+2. Line-number navigation second (only when you need jump targets):
+   `ambiance context "<query>" --format index --json --project-path <path> --auto-sync`
+3. Structural confirmation third:
+   `ambiance grep "<ast pattern>" --json --project-path <path>`
+4. Lexical detail fill-in last:
+   `rg -n "<term>" <path>` (or `grep -R` fallback), ideally scoped to files from prior steps
+
+**Default to `context` (no format flag).** Only use `--format index` when you specifically need file:line jump targets.
+
+Only use `ambiance grep` when the task explicitly needs AST structure/captures:
+   - "find all functions/classes/import forms"
+   - codemod/refactor pattern matching
+   - syntactic queries where regex text search is noisy
+
+**Do NOT abandon the ambiance workflow early** — complete context → grep → summary steps before falling back to Read/Grep/Glob.
+
+Fallback (if embeddings/index are unavailable): start with native lexical search, then grep.
+
+## Query Strategy: Symbol-Anchored Queries
+
+The single biggest factor in result quality is query specificity. Use concrete function/class/variable names, not generic keywords.
+
+**Rules:**
+- Include specific symbol names you know or discovered from `hints`/`summary`/`manifest`
+- Include library-specific identifiers (e.g., `Hono`, `D1Database`, `R2Bucket`)
+- Avoid conversational phrasing — ambiance uses semantic similarity, not Q&A
+- Fewer specific symbols beat many generic keywords
+
+**Examples:**
+- **Strong** (specific symbols): `"generateThumbnailForKey presignR2GetUrl cf.image uploadR2Object"` → 1 file, 4 symbols, zero noise
+- **Strong** (library-anchored): `"Supabase auth session refresh middleware validateToken"` → focused results
+- **Weak** (generic keywords): `"image upload thumbnail generation R2 storage cf.image transform resize"` → 10 files, 40% noise
+- **Weak** (conversational): `"What is the status of auth?"` → poor retrieval
+
+## Initial Project Discovery
+
+⚠️ **CRITICAL**: Never mix frontend and backend symbols in first context query.
+
+### The Problem with Broad Queries
+
+❌ **DON'T DO THIS:**
 ```bash
-# Step 1: Get overview
-ambiance hints --json --project-path ./ --max-files 100
-
-# Step 2: Drill into area of interest (based on hints output)
-ambiance context "area-from-hints" --json --project-path ./ --max-tokens 3000
+# BAD: Mixed domains, no runtime context
+ambiance context "IngestionService ComputationService Dashboard FastAPI APIClient"
 ```
 
-**Example**:
-```
-User: "What does this project do?"
+**Why this fails:**
+- Mixes 3 intents: backend services + API framework + frontend client
+- Class names without runtime anchors get low relevance
+- "Sticky" symbols (like `APIClient`) dominate, missing architecture
+- Result: 1 file instead of 8-12
 
-Agent:
-  1. hints → "Express API with TypeScript, main entry: src/index.ts"
-  2. context "express api routes and middleware" → detailed code context
-  3. Respond: "This is an Express API built with TypeScript..."
-```
+### Multi-Pass Strategy (Recommended)
 
-### Pattern 2: Debug Flow
+✅ **DO THIS instead - run 3-4 focused passes:**
 
-**Trigger**: User reports error, provides stack trace, or says something is "broken"
-
+#### 1. Start with Manifest (Optional but Helpful)
 ```bash
-# Step 1: Parse error with debug command
-ambiance debug "${ERROR_LOG}" --json --project-path ./
-
-# Step 2: If debug identifies files, get detailed context
-ambiance context "${IDENTIFIED_AREA}" --json --project-path ./ --max-tokens 2000
-
-# Step 3: If needed, find related patterns
-ambiance grep "${PATTERN_FROM_ERROR}" --json --project-path ./
+ambiance manifest --exports-only --max-files 50 --format flat --json --project-path <path>
 ```
+→ Quick scan of exported functions/classes to identify entry points
 
-**Example**:
-```
-User: "Getting TypeError: Cannot read property 'id' of undefined at user.ts:42"
-
-Agent:
-  1. debug "TypeError: Cannot read property 'id' of undefined at user.ts:42"
-     → identifies src/user.ts, src/models/user.ts
-  2. context "user model and data access in user.ts"
-     → reveals user object can be null
-  3. Respond: "The error at user.ts:42 occurs when user is null..."
-```
-
-### Pattern 3: Implementation Prep
-
-**Trigger**: User asks to add feature, implement functionality, or make changes
-
+#### 2. Backend Topology First
 ```bash
-# Step 1: Understand existing structure
-ambiance hints --json --project-path ./ --max-files 50
-
-# Step 2: Get implementation context for related area
-ambiance context "${RELATED_FEATURE}" --json --project-path ./ \
-  --max-tokens 3000 --task-type implement
-
-# Step 3: Find existing patterns to follow
-ambiance grep "${PATTERN_TO_MATCH}" --json --project-path ./
+ambiance context "python services main.py health_check scheduler loop run_ingestion_job run_generation_loop run_tracking_loop" \
+  --format index --json --project-path <path> --auto-sync
 ```
 
-**Example**:
-```
-User: "Add rate limiting to the API"
+**Why this works:**
+- Entry point anchors (`main.py`, `health_check`)
+- Runtime verbs (`loop`, `run_`, `scheduler`)
+- Single domain (Python backend only)
+- No frontend terms to confuse retrieval
 
-Agent:
-  1. hints → identifies middleware in src/middleware/
-  2. context "middleware and request handling" --task-type implement
-     → shows existing middleware patterns
-  3. grep "app.use($MIDDLEWARE)" → finds all middleware registration
-  4. Implement following existing patterns
-```
-
-### Pattern 4: Code Review
-
-**Trigger**: User asks to review, check, or analyze code quality
-
+#### 3. Infrastructure Second
 ```bash
-# Step 1: Get architectural overview
-ambiance context "${AREA_TO_REVIEW}" --json --project-path ./ \
-  --max-tokens 5000 --task-type review
-
-# Step 2: Check specific patterns
-ambiance grep "${SECURITY_PATTERN}" --json --project-path ./
-
-# Step 3: Analyze frontend if applicable
-ambiance frontend --json --project-path ./
+ambiance context "redis stream marketforge:events xadd xreadgroup EventPublisher EventConsumer data_ingested signals_generated" \
+  --format index --json --project-path <path>
 ```
 
-**Example**:
-```
-User: "Review the authentication implementation"
+**Focus:** Data stores, message brokers, event systems
 
-Agent:
-  1. context "authentication security validation" --task-type review
-  2. grep "password|secret|token" → find security-sensitive code
-  3. Analyze for issues: hardcoded secrets, weak validation, etc.
-  4. Provide review with file:line references
-```
-
-### Pattern 5: Targeted Search
-
-**Trigger**: User asks specific "where is" or "find all" questions
-
+#### 4. API Wiring Third
 ```bash
-# For structural patterns → use grep
-ambiance grep "${AST_PATTERN}" --json --project-path ./
-
-# For semantic concepts → use context
-ambiance context "${CONCEPT}" --json --project-path ./ --max-tokens 2000
+ambiance context "FastAPI include_router APIRouter monitoring charts data ml_builder event_stream health_checker" \
+  --format index --json --project-path <path>
 ```
 
-**Example**:
-```
-User: "Find all API endpoints"
+**Focus:** HTTP routes, endpoints, backend API structure (no frontend!)
 
-Agent (structural search):
-  grep "app.get($PATH, $HANDLER)" → finds Express routes
-  grep "app.post($PATH, $HANDLER)" → finds POST routes
-
-User: "Where is authentication handled?"
-
-Agent (semantic search):
-  context "authentication and authorization logic" → semantic results
-```
-
-## Parameter Selection Guide
-
-### `--max-tokens` (for `context`)
-
-```
-User Query Complexity → Token Budget
-
-"Quick question" / "What does X do?"           → 2000
-"How does feature Y work?"                     → 3000-5000
-"Explain the architecture of Z"                → 5000-8000
-"Comprehensive review of entire system"        → 10000+
-```
-
-**Rule of thumb**: Start with 2000, increase if results are truncated or incomplete.
-
-### `--max-files` (for `hints`)
-
-```
-Scope → File Limit
-
-"Main feature area"           → 50
-"Subsystem or module"         → 100
-"Broad overview"              → 150-200
-"Entire large codebase"       → 300+
-```
-
-**Rule of thumb**: Use 100 as default, adjust based on project size from `doctor` output.
-
-### `--task-type` (for `context`)
-
-```
-User Intent → Task Type
-
-Understanding / Learning                       → (default/omitted)
-"Implement" / "Add" / "Create"                → implement
-"Review" / "Check" / "Analyze"                → review
-```
-
-## Common Query Patterns
-
-### Good Queries (Semantic)
-
-These work well with `context`:
-
-- ✅ "user authentication and session management"
-- ✅ "database connection and query handling"
-- ✅ "error handling and logging"
-- ✅ "API endpoint routing and middleware"
-- ✅ "frontend component structure and state"
-
-### Good Patterns (Structural)
-
-These work well with `grep`:
-
-- ✅ `function $NAME($$ARGS) { $$BODY }` - find all functions
-- ✅ `class $NAME extends $BASE { $$BODY }` - find subclasses
-- ✅ `import { $IMPORT } from '$MODULE'` - find imports
-- ✅ `app.$METHOD($PATH, $HANDLER)` - find Express routes
-- ✅ `export function $NAME($$ARGS)` - find exported functions
-
-### Poor Queries
-
-Avoid these patterns:
-
-- ❌ "code" (too vague)
-- ❌ "file" (too generic)
-- ❌ "function" (use grep instead)
-- ❌ "everything" (use hints instead)
-- ❌ Single character or very short terms
-
-## Pre-Flight Checks
-
-### Session Start Checklist
-
-Run once at the beginning of an agent session:
-
+#### 5. Frontend Last (if applicable)
 ```bash
-# 1. Verify environment
-ambiance doctor --json
-
-# 2. If embeddings not initialized or stale → fix it
-ambiance embeddings status --json --project-path ./
-# → If needed: ambiance embeddings create/update
-
-# 3. Get initial project orientation
-ambiance hints --json --project-path ./ --max-files 100
+ambiance context "react router Dashboard SignalsPage InsightsPage AlertsPage ChartsPage DataPage MLBuilderPage apiClient" \
+  --format index --json --project-path <path>
 ```
 
-### Before Each Command
+**Focus:** Pure frontend - components, pages, client routing
 
-```javascript
-// Always use explicit project path
-const PROJECT_PATH = process.env.WORKSPACE_FOLDER || process.cwd();
+### Query Construction Rules
 
-// Always request JSON output
-const args = [..., '--json', '--project-path', PROJECT_PATH];
+#### ✅ USE THESE (High Signal):
 
-// Always check exit codes
-if (res.status !== 0) handleError(res);
-```
+| Category | Good Terms | Why |
+|----------|-----------|-----|
+| **Entry Points** | `main.py`, `index.ts`, `app.py`, `server.ts` | Actual runtime entry |
+| **Schedulers** | `scheduler`, `loop`, `cron`, `interval`, `run_*` | Continuous processes |
+| **Verbs** | `run_`, `process_`, `handle_`, `execute_` | Actions, not just nouns |
+| **Infrastructure** | `redis`, `postgres`, `rabbitmq`, `kafka`, `stream` | Concrete tech |
+| **Wiring** | `router`, `include_router`, `Blueprint`, `mount` | Connection points |
+| **Events** | `xadd`, `publish`, `emit`, `dispatch`, `subscribe` | Data flow |
 
-## Response Construction
+#### ❌ AVOID THESE (Low Signal):
 
-### Include File References
+| Category | Bad Terms | Why |
+|----------|-----------|-----|
+| **Bare Classes** | `UserService`, `DataProcessor` | No runtime context |
+| **Generic** | `Service`, `Manager`, `Handler` | Too abstract |
+| **Mixed Domains** | `APIClient` + `FastAPI` in same query | Frontend + backend |
+| **Interfaces** | `IUserRepository`, `IDataStore` | Not runtime code |
 
-Always reference specific files and lines from command output:
+### Expected Results
 
-```
-❌ "The authentication is handled in the middleware"
+Good orientation should give you:
 
-✅ "Authentication is handled in src/auth/middleware.ts:12-45
-   by the validateToken function"
-```
+- **Backend:** 3-6 files covering entry points and services
+- **Infrastructure:** 2-4 files showing connections and setup
+- **API:** 3-5 files with routes and handlers
+- **Frontend:** 4-8 files with components and routing
+- **Total:** 12-25 unique files across all passes
 
-### Provide Context from Output
+### If Results Are Poor
 
-Don't just reference, explain what you found:
+**Symptom:** Only 1-2 files returned
 
-```
-❌ "Found in src/auth.ts"
+**Likely Causes:**
+- Mixed-domain query
+- Using class names without verbs
+- Embeddings not synced
 
-✅ "The authentication uses JWT tokens (src/auth/jwt.ts:23),
-   validated by middleware (src/auth/middleware.ts:12) before
-   each protected route"
-```
+**Fixes:**
+- Split into separate backend/frontend passes
+- Add entry point file names (`main.py`, `index.ts`)
+- Use runtime verbs (`run_`, `loop`)
+- Add `--auto-sync` flag
+- Run `manifest` first to see what's available
 
-### Handle Empty Results Gracefully
+**Recipe:** See `ambiance skill recipe orientation --json` for complete workflow
 
-```javascript
-const result = runAmbiance(['context', query, '--json', '--project-path', './']);
+## Discover Full Details (No Doc Digging)
 
-if (result.relevantFiles.length === 0) {
-  // Try fallback approaches
-  return "I couldn't find specific code for that query. Let me try a broader search...";
-  // Then try hints or grep
-}
-```
+Use CLI help first to inspect current command flags and usage:
+
+- `ambiance --help`
+- `ambiance --help --expanded`
+- `ambiance <command> --help` (examples: `ambiance context --help`, `ambiance embeddings --help`)
+
+Use skill introspection commands as the canonical machine-readable source:
+
+- List all templates: `ambiance skill list --json`
+- Get a workflow definition: `ambiance skill workflow <understand|debug|implement|review> --json`
+- Get command recipe details: `ambiance skill recipe <context|hints|debug|grep|summary|frontend|doctor|embeddings-status|packs-create|packs-list|packs-template> --json`
+
+Examples:
+
+- `ambiance skill workflow understand --json`
+- `ambiance skill recipe context --json`
+- `ambiance skill recipe embeddings-status --json`
+
+## JSON And Reliability Rules
+
+- Always pass `--json`.
+- Always pass explicit `--project-path` for project-wide commands.
+- Check `exitCode` and `success` before reading payload fields.
+- Use `--quiet` when needed to suppress non-essential stderr logs.
+
+## Command Pairing Patterns
+
+- New codebase:
+  1. `hints`
+  2. `context`
+
+- Error triage:
+  1. `debug`
+  2. `context --format index` on the identified area
+  3. `grep` for AST-structural confirmation
+  4. native `rg` in top files from `nextActions.openFiles`
+
+- Implementation prep:
+  1. `hints`
+  2. `context --task-type implement --format index`
+  3. `grep` to find existing AST coding patterns
+  4. native `rg` in top files from `byFile`
+
+- Review:
+  1. `context --task-type review --format index`
+  2. `grep` for security/anti-pattern AST checks
+  3. native `rg` for risky terms/secrets and exact string evidence
+
+## Context Format Choice
+
+- **Default `context`** (no `--format` flag): Focused, low-noise results organized by symbols and relationships. Best with specific symbol names.
+- **`--format index`**: File:line jump targets with confidence/relevance. More results but noisier.
+
+Format policy:
+1. **Default to `context` (no format flag)** for understanding what code does and how symbols relate.
+2. Use `--format index` when you specifically need line-number jump targets for navigation.
+
+When using index mode, use `jumpTargets`, `byFile`, and `nextActions.openFiles` to decide where to run text search and edits.
 
 ## Error Recovery
 
-### Automatic Recovery Pattern
+- Embeddings not initialized:
+  `ambiance embeddings create --json --project-path <path> --force true`
 
-```javascript
-function runWithRecovery(command, args, projectPath) {
-  try {
-    return runAmbiance([command, ...args, '--json', '--project-path', projectPath]);
-  } catch (error) {
-    if (error.message.includes('Embeddings not initialized')) {
-      // Auto-initialize
-      runAmbiance(['embeddings', 'create', '--json', '--project-path', projectPath]);
-      // Retry
-      return runAmbiance([command, ...args, '--json', '--project-path', projectPath]);
-    }
+- Embeddings stale:
+  `ambiance context "<query>" --json --project-path <path> --auto-sync`
+  or `ambiance embeddings update --json --project-path <path>`
 
-    if (error.message.includes('stale')) {
-      // Auto-update
-      runAmbiance(['embeddings', 'update', '--json', '--project-path', projectPath]);
-      // Retry
-      return runAmbiance([command, ...args, '--json', '--project-path', projectPath]);
-    }
+## Index Hygiene
 
-    throw error; // Can't recover
-  }
-}
-```
+1. Check status first for deep investigations:
+   `ambiance embeddings status --json --project-path <path>`
+2. Prefer incremental freshness:
+   use `context --auto-sync` or `embeddings update` for routine changes.
+3. Use full rebuild only when needed:
+   `embeddings create --force true` only for migration/incompatible model/corruption scenarios.
 
-### Graceful Degradation
-
-```javascript
-// Try semantic search, fall back to structural
-function findCode(query, projectPath) {
-  try {
-    // Try semantic first (best)
-    return runAmbiance(['context', query, '--json', '--project-path', projectPath]);
-  } catch {
-    // Fall back to structural pattern matching
-    const pattern = guessPattern(query);
-    return runAmbiance(['grep', pattern, '--json', '--project-path', projectPath]);
-  }
-}
-```
-
-## Performance Tips
-
-### Cache Project Hints
-
-```javascript
-// Run once per session, reuse results
-const projectHints = runAmbiance(['hints', '--json', '--project-path', projectPath]);
-
-// Use hints.projectType, hints.keyDirectories throughout session
-```
-
-### Start Narrow, Expand as Needed
-
-```javascript
-// Start with focused query
-let result = runAmbiance([
-  'context', query, '--json',
-  '--project-path', projectPath,
-  '--max-tokens', '2000'
-]);
-
-// If insufficient, expand
-if (result.relevantFiles.length < 3 || result.truncated) {
-  result = runAmbiance([
-    'context', query, '--json',
-    '--project-path', projectPath,
-    '--max-tokens', '5000'
-  ]);
-}
-```
-
-### Batch Related Queries
-
-```javascript
-// Instead of multiple context calls, use one comprehensive query
-// ❌ Bad:
-const auth = runAmbiance(['context', 'authentication', ...]);
-const authz = runAmbiance(['context', 'authorization', ...]);
-
-// ✅ Good:
-const authFull = runAmbiance(['context', 'authentication and authorization', ...]);
-```
-
-## Integration Checklist
-
-For agents integrating Ambiance:
-
-- [ ] Use explicit `--project-path` for all commands
-- [ ] Always request `--json` output
-- [ ] Check exit codes before parsing JSON
-- [ ] Handle embeddings initialization gracefully
-- [ ] Implement fallback strategies (context → grep → hints)
-- [ ] Cache project hints for session
-- [ ] Reference specific files and lines in responses
-- [ ] Start with conservative token/file limits, expand as needed
-- [ ] Run `doctor` at session start
-- [ ] Validate JSON parsing (catch malformed output)
-
-## Quick Command Reference
-
-```bash
-# Environment check
-ambiance doctor --json
-
-# Project overview
-ambiance hints --json --project-path ./ --max-files 100
-
-# Semantic search
-ambiance context "query" --json --project-path ./ --max-tokens 3000
-
-# Debug error
-ambiance debug "error log" --json --project-path ./
-
-# Structural search
-ambiance grep "pattern" --json --project-path ./ --language typescript
-
-# File summary
-ambiance summary path/to/file.ts --json
-
-# Frontend analysis
-ambiance frontend --json --project-path ./
-
-# Embeddings management
-ambiance embeddings status --json --project-path ./
-ambiance embeddings create --json --project-path ./
-ambiance embeddings update --json --project-path ./
-
-# Skill validation
-ambiance skill verify --json
-```
-
-## See Also
-
-- [Full README](./README.md) - Comprehensive documentation
-- [TROUBLESHOOTING](./TROUBLESHOOTING.md) - Error diagnosis and resolution
-- [MIGRATION](../../MIGRATION.md) - MCP to CLI migration guide
+- If semantic results are weak:
+  1. broaden `context` query
+  2. increase `--max-tokens`
+  3. switch to `grep` for deterministic structural search

@@ -481,13 +481,28 @@ export class SemanticCompactor {
    */
   private applyFilteredResults(files: PrunedFile[], filteredResult: FilteredResult): PrunedFile[] {
     const keptSymbolIds = new Set(filteredResult.symbols.map(s => s.symbol.id));
+    const scoreBySymbolId = new Map(
+      filteredResult.symbols.map(s => [s.symbol.id, s.totalScore] as const)
+    );
 
     return files
       .map(file => ({
         ...file,
-        symbols: file.symbols.filter(symbol => keptSymbolIds.has(symbol.id)),
+        symbols: file.symbols
+          .filter(symbol => keptSymbolIds.has(symbol.id))
+          .map(symbol => ({
+            ...symbol,
+            // Carry query-aware relevance into downstream output ranking.
+            importance: scoreBySymbolId.get(symbol.id) ?? symbol.importance,
+          }))
+          .sort((a, b) => (b.importance || 0) - (a.importance || 0)),
       }))
-      .filter(file => file.symbols.length > 0);
+      .filter(file => file.symbols.length > 0)
+      .sort((a, b) => {
+        const aTop = a.symbols[0]?.importance || 0;
+        const bTop = b.symbols[0]?.importance || 0;
+        return bTop - aTop;
+      });
   }
 
   /**
@@ -554,9 +569,9 @@ export class SemanticCompactor {
       rust: ['.rs'],
       java: ['.java'],
       cpp: ['.cpp', '.c', '.h', '.hpp'],
-      markdown: ['.md'],
+      markdown: ['.md', '.mdx'],
       json: ['.json', '.yaml', '.yml'],
-      html: ['.html', '.htm'],
+      html: ['.html', '.htm', '.astro', '.vue', '.svelte', '.css', '.scss', '.sass', '.less'],
     };
 
     const supportedLanguages = this.options.supportedLanguages || ['typescript', 'javascript'];

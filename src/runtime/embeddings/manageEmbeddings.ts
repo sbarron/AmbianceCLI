@@ -313,6 +313,10 @@ export async function getEmbeddingStatus(args: {
     format,
   });
 
+  const warnings: string[] = Array.isArray((result as any)?.warnings)
+    ? [...(result as any).warnings]
+    : [];
+
   if (result?.success && result.stats && result.stats.totalChunks > 0) {
     try {
       const details = await getProjectEmbeddingDetails({
@@ -321,14 +325,16 @@ export async function getEmbeddingStatus(args: {
       });
 
       if (details?.coverage) {
-        return { ...result, coverage: details.coverage };
+        return { ...result, coverage: details.coverage, ...(warnings.length > 0 ? { warnings } : {}) };
       }
-    } catch {
-      // Non-fatal; omit coverage if helper fails
+    } catch (error) {
+      // Non-fatal; include warning so callers can diagnose partial status.
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(`Coverage details unavailable: ${message}`);
     }
   }
 
-  return result;
+  return { ...result, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 export async function runEmbeddingHealthCheck(args: {
@@ -522,7 +528,9 @@ export async function createProjectEmbeddings(args: {
     const progress = await generator.generateProjectEmbeddings(projectId, resolvedProjectPath, {
       batchSize,
       autoMigrate: true,
-      filePatterns: ['**/*.{ts,tsx,js,jsx,py,md}'],
+      filePatterns: [
+        '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
+      ],
       parallelMode,
       maxConcurrency,
     });
@@ -556,6 +564,14 @@ export async function createProjectEmbeddings(args: {
       embeddingsGenerated: progress.embeddings,
       compatible: postMigrationCompatibility.compatible,
     });
+
+    // Record sync time for auto-sync tracking
+    try {
+      const { recordSync } = await import('../../local/autoSyncManager');
+      await recordSync(projectId);
+    } catch (error) {
+      logger.debug('Failed to record sync time', { error });
+    }
 
     return result;
   } catch (error) {
@@ -608,13 +624,29 @@ export async function updateProjectEmbeddings(args: {
       errors: result.errors.length,
     });
 
+    const hadErrors = result.errors.length > 0;
+    const nothingUpdated = result.processedFiles === 0 && result.embeddings === 0;
+    const success = !(hadErrors && nothingUpdated);
+
+    // Record sync time for auto-sync tracking (only if successful)
+    if (success) {
+      try {
+        const { recordSync } = await import('../../local/autoSyncManager');
+        await recordSync(projectId);
+      } catch (error) {
+        logger.debug('Failed to record sync time', { error });
+      }
+    }
+
     return {
-      success: true,
-      updated: true,
+      success,
+      updated: success,
       projectId,
       projectPath: resolvedProjectPath,
       result,
-      message: `Updated ${result.embeddings} embeddings across ${result.processedFiles} files`,
+      message: success
+        ? `Updated ${result.embeddings} embeddings across ${result.processedFiles} files`
+        : `Failed to update embeddings: ${result.errors[0] || 'no files were updated'}`,
     };
   } catch (error) {
     logger.error('Incremental embedding update failed', {
@@ -763,6 +795,16 @@ export async function checkStaleFiles(args: {
         force: true,
         batchSize,
       });
+
+      // Record sync time after successful auto-update
+      if (updateResult?.success) {
+        try {
+          const { recordSync } = await import('../../local/autoSyncManager');
+          await recordSync(projectId);
+        } catch (error) {
+          logger.debug('Failed to record sync time after stale file update', { error });
+        }
+      }
     }
 
     return {
@@ -1096,7 +1138,7 @@ async function handleSetWorkspace(
             rateLimit: 500,
             maxChunkSize: 1500,
             filePatterns: [
-              '**/*.{ts,tsx,js,jsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh,md}',
+              '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
             ],
           }
         );

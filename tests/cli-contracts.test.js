@@ -25,6 +25,17 @@ function runCli(args, extraEnv) {
     }
   );
 
+  if (result.error) {
+    const details = [
+      `spawnSync failed: ${result.error.message}`,
+      `code=${result.error.code || 'unknown'}`,
+      `syscall=${result.error.syscall || 'unknown'}`,
+      `path=${result.error.path || process.execPath}`,
+      `args=${JSON.stringify(['-r', 'ts-node/register', 'src/cli.ts', ...args])}`,
+    ].join('\n');
+    throw new Error(details);
+  }
+
   return {
     status: result.status,
     stdout: result.stdout,
@@ -154,6 +165,39 @@ describe('CLI JSON contracts', () => {
     schemas.grepSchema.parse(payload);
     expect(payload.success).toBe(true);
     expect(payload.pattern).toBe(pattern);
+  });
+
+  test('grep rejects unknown options with usage error envelope', () => {
+    const res = runCli([
+      'grep',
+      '--json',
+      '--project-path',
+      process.cwd(),
+      '--not-a-real-flag',
+      '1',
+      'function $NAME($ARGS) { $BODY }',
+    ]);
+    expect(res.status).toBe(2);
+    const payload = parseJsonStdout(res.stdout);
+    schemas.errorEnvelopeSchema.parse(payload);
+    expect(payload.command).toBe('grep');
+    expect(payload.error).toContain('Unknown grep option');
+  });
+
+  test('grep validates --rule-json input before execution', () => {
+    const res = runCli([
+      'grep',
+      '--json',
+      '--project-path',
+      process.cwd(),
+      '--rule-json',
+      '{not-json}',
+    ]);
+    expect(res.status).toBe(2);
+    const payload = parseJsonStdout(res.stdout);
+    schemas.errorEnvelopeSchema.parse(payload);
+    expect(payload.command).toBe('grep');
+    expect(payload.error).toContain('Invalid JSON provided to --rule-json');
   });
 
   test('embeddings status --json returns valid JSON', () => {

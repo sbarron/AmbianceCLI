@@ -79,27 +79,31 @@ export class Logger {
   }
 
   info(message: string, context?: LogContext): void {
-    if (this.shouldLog('info')) {
-      this.log('INFO', message, context);
-    }
+    if (!this.shouldLog('info')) return;
+    this.log('INFO', message, context);
   }
 
   warn(message: string, context?: LogContext): void {
+    if (!this.shouldLog('warn')) return;
     this.log('WARN', message, context);
   }
 
   error(message: string, context?: LogContext): void {
+    if (!this.shouldLog('error')) return;
     this.log('ERROR', message, context);
   }
 
   debug(message: string, context?: LogContext): void {
-    if (process.env.DEBUG || process.env.NODE_ENV === 'development') {
-      this.log('DEBUG', message, context);
-    }
+    if (!(process.env.DEBUG || process.env.NODE_ENV === 'development')) return;
+    if (!this.shouldLog('debug')) return;
+    this.log('DEBUG', message, context);
   }
 
   private shouldLog(level: string): boolean {
     const logLevel = process.env.LOG_LEVEL?.toLowerCase() || 'info';
+    if (['silent', 'off', 'none'].includes(logLevel)) {
+      return false;
+    }
 
     const levels = ['debug', 'info', 'warn', 'error'];
     const currentLevelIndex = levels.indexOf(logLevel);

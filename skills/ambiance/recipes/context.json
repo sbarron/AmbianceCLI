@@ -14,6 +14,10 @@
     "--max-tokens",
     "${maxTokens}"
   ],
+  "optionalArgs": [
+    "--auto-sync",
+    "--auto-sync-batch-size <n>"
+  ],
   "outputSchema": {
     "json_format": {
       "compactedContent": "string - markdown-formatted code summaries",
@@ -45,9 +49,13 @@
   ],
   "notes": [
     "Requires embeddings for best results (falls back to text search)",
+    "Query strategy: use semantic anchor clusters (keyword-dense phrases), not conversational questions",
+    "Target symbols: include technical identifiers (e.g., Supabase, Puppeteer, cosineSimilarity) with domain keywords",
     "Use --task-type for implementation/review-focused context",
     "Use --format index for navigation, --format json for context compression",
     "Index format returns confidence scores (0.9=exports, 0.7=operations)",
-    "Higher maxTokens = more complete but slower and costlier"
+    "Higher maxTokens = more complete but slower and costlier",
+    "Recommended routing (embedding-enabled): context --format index first, then AST grep, then native lexical search for detail fill-in",
+    "Use --auto-sync to run stale-index detection and inline updates before context generation"
   ]
 }

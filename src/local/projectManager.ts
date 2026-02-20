@@ -54,7 +54,11 @@ export class LocalProjectManager {
     try {
       if (fs.existsSync(this.projectsFile)) {
         const data = fs.readFileSync(this.projectsFile, 'utf8');
-        const projectsArray = JSON.parse(data);
+        const parsed = JSON.parse(data);
+        const projectsArray = Array.isArray(parsed) ? parsed : [];
+        if (!Array.isArray(parsed)) {
+          logger.warn('local-projects.json is not an array; resetting in-memory project cache');
+        }
 
         for (const project of projectsArray) {
           this.projects.set(project.id, {

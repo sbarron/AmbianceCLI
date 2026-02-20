@@ -14,12 +14,12 @@
     "${maxFiles}"
   ],
   "outputSchema": {
-    "projectType": "string - detected project type (e.g. 'typescript-node', 'react')",
-    "entryPoints": "array - main entry files",
-    "keyDirectories": "object - source, tests, config paths",
-    "technologies": "array - detected frameworks and tools",
-    "fileCount": "number - total files analyzed",
-    "hints": "array - human-readable navigation hints"
+    "command": "string - always 'hints' in JSON envelope mode",
+    "exitCode": "number - CLI exit code (0 on success)",
+    "success": "boolean - command success",
+    "hints": "object|string - project hint payload (object in current implementation)",
+    "type": "string - hint mode/type (optional)",
+    "metadata": "object - analysis stats and file composition (optional)"
   },
   "notes": [
     "Does not require embeddings",

@@ -112,16 +112,36 @@ export class ProjectIdentifier {
       const branch = execSync('git branch --show-current', {
         cwd: repoPath,
         encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
       }).trim();
-      const commitSha = execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf8' }).trim();
+      let commitSha = '';
+      try {
+        // Avoid noisy stderr for repos initialized without any commits (no HEAD yet).
+        execSync('git rev-parse --verify HEAD', {
+          cwd: repoPath,
+          stdio: 'ignore',
+        });
+        commitSha = execSync('git rev-parse HEAD', {
+          cwd: repoPath,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+      } catch {
+        commitSha = '';
+      }
       const isClean =
-        execSync('git status --porcelain', { cwd: repoPath, encoding: 'utf8' }).trim() === '';
+        execSync('git status --porcelain', {
+          cwd: repoPath,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim() === '';
 
       let remoteUrl: string | undefined;
       try {
         remoteUrl = execSync('git config --get remote.origin.url', {
           cwd: repoPath,
           encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
         }).trim();
       } catch {
         // No remote origin configured

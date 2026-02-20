@@ -189,7 +189,7 @@ async function analyzeProjectIndexableFiles(projectPath: string): Promise<{
 
     // Use the same file patterns as the indexer
     const includePatterns = [
-      '**/*.{js,jsx,ts,tsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh}',
+      '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
     ];
 
     // Combine all ignore patterns (same as indexer)
@@ -618,16 +618,23 @@ export async function getProjectEmbeddingDetails(args: {
           const resolvedPath = path.resolve(projectIdentifier);
 
           // Check if there are any embeddings where the file paths suggest this project path
-          const rows = await new Promise<any[]>((resolve, reject) => {
-            db.all(
-              `SELECT DISTINCT project_id FROM embeddings LIMIT 10`,
-              [],
-              (err: any, rows: any[]) => {
-                if (err) reject(err);
-                else resolve(rows);
-              }
-            );
-          });
+          let rows: any[] = [];
+          if (typeof db.prepare === 'function') {
+            rows = db.prepare(`SELECT DISTINCT project_id FROM embeddings LIMIT 10`).all();
+          } else if (typeof db.all === 'function') {
+            rows = await new Promise<any[]>((resolve, reject) => {
+              db.all(
+                `SELECT DISTINCT project_id FROM embeddings LIMIT 10`,
+                [],
+                (err: any, callbackRows: any[]) => {
+                  if (err) reject(err);
+                  else resolve(callbackRows || []);
+                }
+              );
+            });
+          } else {
+            throw new Error('Unsupported database adapter: expected prepare() or all()');
+          }
 
           // For each project ID, check if any of its files match the target path
           for (const row of rows) {
@@ -684,9 +691,8 @@ export async function getProjectEmbeddingDetails(args: {
       lineCount: f.lineCount,
     }));
 
-    // Calculate coverage - since we can't scan the original project (paths are relative),
-    // we'll use the embedded files as the baseline and note this limitation
-    const embeddedFiles = stats?.totalFiles || 0;
+    // Calculate coverage using unique embedded file paths to avoid stale/inflated counters.
+    const embeddedFiles = new Set(filesMetadata.map(f => f.path)).size;
 
     // Extract language and file type statistics from embedded files
     const languages: Record<string, number> = {};
@@ -706,8 +712,9 @@ export async function getProjectEmbeddingDetails(args: {
     const embeddingStats = analyzeEmbeddingCoverage(filesMetadata);
 
     const indexableFiles = projectScan.indexableFiles;
-    const coveragePercent =
+    const rawCoveragePercent =
       indexableFiles > 0 ? Math.round((embeddedFiles / indexableFiles) * 10000) / 100 : 0;
+    const coveragePercent = Math.min(100, rawCoveragePercent);
     const missingFiles = Math.max(0, indexableFiles - embeddedFiles);
 
     const coverage = {
@@ -750,11 +757,11 @@ export async function getProjectEmbeddingDetails(args: {
     };
 
     try {
-      // Always query the database to get model breakdown
+      // Query the database to get model breakdown (better-sqlite3 style).
       const db = (storage as any).db;
-      if (db) {
-        const modelRows = await new Promise<any[]>((resolve, reject) => {
-          db.all(
+      if (db && typeof db.prepare === 'function') {
+        const modelRows = db
+          .prepare(
             `SELECT
               metadata_embedding_provider,
               metadata_embedding_dimensions,
@@ -762,14 +769,9 @@ export async function getProjectEmbeddingDetails(args: {
             FROM embeddings
             WHERE project_id = ?
             GROUP BY metadata_embedding_provider, metadata_embedding_dimensions
-            ORDER BY count DESC`,
-            [project.id],
-            (err: any, rows: any[]) => {
-              if (err) reject(err);
-              else resolve(rows);
-            }
-          );
-        });
+            ORDER BY count DESC`
+          )
+          .all(project.id);
 
         // Normalize provider labels
         const norm = (label: string) => {
@@ -780,7 +782,7 @@ export async function getProjectEmbeddingDetails(args: {
           return label;
         };
 
-        const models = modelRows.map(row => ({
+        const models = modelRows.map((row: any) => ({
           provider: norm(row.metadata_embedding_provider || 'unknown'),
           dimensions: row.metadata_embedding_dimensions || 0,
           count: row.count,

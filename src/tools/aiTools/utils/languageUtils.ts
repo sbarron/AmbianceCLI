@@ -26,6 +26,16 @@ export function getLanguageFromPath(filePath: string): string {
     '.rs': 'rust',
     '.swift': 'swift',
     '.kt': 'kotlin',
+    '.html': 'html',
+    '.htm': 'html',
+    '.astro': 'html',
+    '.vue': 'html',
+    '.svelte': 'html',
+    '.css': 'css',
+    '.scss': 'css',
+    '.sass': 'css',
+    '.less': 'css',
+    '.mdx': 'markdown',
   };
   return languageMap[ext] || 'unknown';
 }

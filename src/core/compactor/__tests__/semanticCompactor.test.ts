@@ -87,8 +87,16 @@ describe('SemanticCompactor', () => {
       const files = await fileDiscovery.discoverFiles();
 
       // 🔑 Use absPath for path checks
-      expect(files.every(f => !f.absPath.includes('node_modules'))).toBe(true);
+      expect(files.every(f => !/[\\/]node_modules[\\/]/i.test(f.absPath))).toBe(true);
       expect(files.every(f => !f.absPath.includes('.test.'))).toBe(true);
+    });
+
+    it('should respect .gitignore patterns during discovery', async () => {
+      const fileDiscovery = new FileDiscovery(testProjectPath);
+      const files = await fileDiscovery.discoverFiles();
+      const ignoredRelPath = path.normalize(path.join('src', 'ignored-by-gitignore.ts'));
+
+      expect(files.some(f => path.normalize(f.relPath) === ignoredRelPath)).toBe(false);
     });
 
     it('should sort files by relevance', async () => {
@@ -563,7 +571,11 @@ describe('SemanticCompactor', () => {
 // Helper function to create a test project structure
 async function createTestProject(projectPath: string): Promise<void> {
   const srcDir = path.join(projectPath, 'src');
+  const nodeModulesDir = path.join(projectPath, 'node_modules', 'test-dep');
+  const distDir = path.join(projectPath, 'dist');
   await fs.mkdir(srcDir, { recursive: true });
+  await fs.mkdir(nodeModulesDir, { recursive: true });
+  await fs.mkdir(distDir, { recursive: true });
 
   // Create utils.ts with explicit exports
   await fs.writeFile(
@@ -750,6 +762,15 @@ exports.helperFunction = function(data) {
   `
   );
 
+  // Create files that should be excluded from discovery.
+  await fs.writeFile(path.join(nodeModulesDir, 'index.js'), `module.exports = { dep: true };`);
+  await fs.writeFile(path.join(distDir, 'bundle.js'), `console.log('compiled output');`);
+  await fs.writeFile(
+    path.join(srcDir, 'ignored-by-gitignore.ts'),
+    `export const hiddenByGitignore = true;`
+  );
+  await fs.writeFile(path.join(projectPath, '.gitignore'), `src/ignored-by-gitignore.ts\n`);
+
   // Create package.json
   await fs.writeFile(
     path.join(projectPath, 'package.json'),
@@ -771,3 +792,4 @@ exports.helperFunction = function(data) {
     )
   );
 }
+

@@ -77,9 +77,17 @@ const LANGUAGE_MAP: Record<string, SupportedLanguage> = {
   '.cc': 'cpp',
   '.cxx': 'cpp',
   '.md': 'markdown',
+  '.mdx': 'markdown',
   '.json': 'json',
   '.html': 'html',
   '.htm': 'html',
+  '.astro': 'html',
+  '.vue': 'html',
+  '.svelte': 'html',
+  '.css': 'html',
+  '.scss': 'html',
+  '.sass': 'html',
+  '.less': 'html',
   '.yaml': 'json',
   '.yml': 'json',
 };
@@ -88,6 +96,27 @@ export class FileDiscovery {
   private basePath: string;
   private maxFileSize: number;
   private supportedExtensions: string[];
+  private readonly hardExcludedSegments = new Set<string>([
+    'node_modules',
+    'venv',
+    '.venv',
+    '__pycache__',
+    'site-packages',
+    '.pytest_cache',
+    '.mypy_cache',
+    '.git',
+    'dist',
+    'build',
+    'out',
+    'target',
+    '.next',
+    '.turbo',
+    '.vercel',
+    'coverage',
+    '.cache',
+    'tmp',
+    'temp',
+  ]);
 
   constructor(
     basePath: string,
@@ -114,6 +143,15 @@ export class FileDiscovery {
   }
 
   /**
+   * Defense-in-depth: reject known dependency/build/cache paths even if glob ignores miss them.
+   */
+  private isHardExcludedPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+    const segments = normalized.split('/').filter(Boolean);
+    return segments.some(segment => this.hardExcludedSegments.has(segment));
+  }
+
+  /**
    * Discover all parseable source files in the project
    */
   async discoverFiles(): Promise<FileInfo[]> {
@@ -129,10 +167,10 @@ export class FileDiscovery {
 
     const patterns = [
       // Include common source file patterns
-      '**/*.{ts,tsx,js,jsx,mjs,cjs,html,htm}',
+      '**/*.{ts,tsx,js,jsx,mjs,cjs,html,htm,astro,vue,svelte}',
       '**/*.{py,go,rs,java}',
       '**/*.{cpp,c,h,hpp,cc,cxx}',
-      '**/*.{md,json,yaml,yml}',
+      '**/*.{md,mdx,json,yaml,yml,xml,css,scss,sass,less}',
       '**/README*',
       '**/package.json',
       '**/Cargo.toml',
@@ -143,6 +181,18 @@ export class FileDiscovery {
       // Standard ignore patterns
       'node_modules/**',
       '**/node_modules/**',
+      'venv/**',
+      '**/venv/**',
+      '.venv/**',
+      '**/.venv/**',
+      '__pycache__/**',
+      '**/__pycache__/**',
+      'site-packages/**',
+      '**/site-packages/**',
+      '.pytest_cache/**',
+      '**/.pytest_cache/**',
+      '.mypy_cache/**',
+      '**/.mypy_cache/**',
 
       // Verifier #3: Build artifacts exclusion
       'dist/**',
@@ -474,25 +524,38 @@ export class FileDiscovery {
       const filePaths = await runGlobby(patterns, {
         cwd: this.basePath,
         ignore: ignorePatterns,
+        gitignore: true,
+        ignoreFiles: ['.gitignore', '.cursorignore', '.vscodeignore', '.ambianceignore'],
         absolute: false,
         onlyFiles: true,
         followSymbolicLinks: false,
       });
 
-      logger.info('Found potential files', { count: filePaths.length });
+      const initiallyHardExcluded = filePaths.filter(filePath => this.isHardExcludedPath(filePath))
+        .length;
+      const candidateFilePaths = filePaths.filter(filePath => !this.isHardExcludedPath(filePath));
 
-      // Safety check: prevent scanning massive directory structures
-      if (filePaths.length > 10000) {
-        logger.error(
-          `File discovery found ${filePaths.length} files - likely scanning from wrong directory`,
+      logger.info('Found potential files', {
+        count: filePaths.length,
+        hardExcluded: initiallyHardExcluded,
+        afterHardExclusions: candidateFilePaths.length,
+      });
+
+      // Safety check: cap huge scans instead of hard-failing on valid large repositories.
+      const maxCandidateFiles = 10000;
+      const filePathsToProcess =
+        candidateFilePaths.length > maxCandidateFiles
+          ? candidateFilePaths.slice(0, maxCandidateFiles)
+          : candidateFilePaths;
+
+      if (candidateFilePaths.length > maxCandidateFiles) {
+        logger.warn(
+          `File discovery found ${candidateFilePaths.length} candidates after hard exclusions; capping to ${maxCandidateFiles}`,
           {
             basePath: this.basePath,
             currentWorkingDir: process.cwd(),
             workspaceFolder: process.env.WORKSPACE_FOLDER,
           }
-        );
-        throw new Error(
-          `File discovery found ${filePaths.length} files - likely scanning from wrong directory. Expected project directory with <10,000 files.`
         );
       }
 
@@ -500,9 +563,14 @@ export class FileDiscovery {
       const skippedCount = 0;
       let extensionFilteredCount = 0;
       let sizeFilteredCount = 0;
+      let hardExcludedCount = initiallyHardExcluded;
 
-      for (const filePath of filePaths) {
+      for (const filePath of filePathsToProcess) {
         try {
+          if (this.isHardExcludedPath(filePath)) {
+            hardExcludedCount++;
+            continue;
+          }
           // 🔑 Use baseDir (temp fixture dir) for path resolution, not project root
           const absPath = this.toAbsolute(filePath, this.basePath);
           const fileStats = await stat(absPath);
@@ -541,8 +609,11 @@ export class FileDiscovery {
       // Enhanced logging to track each stage as recommended in errorsfixes.md
       logger.info('File discovery breakdown', {
         candidatesFound: filePaths.length,
+        candidatesAfterHardExclusions: candidateFilePaths.length,
+        candidatesProcessed: filePathsToProcess.length,
         keptByExtension: fileInfos.length,
         skippedBySize: sizeFilteredCount,
+        hardExcluded: hardExcludedCount,
         finalSupportedFiles: fileInfos.length,
       });
 

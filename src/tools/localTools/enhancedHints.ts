@@ -699,20 +699,20 @@ function generateNextActions(
 
   // Add checks based on capabilities and query
   if (capabilities.domains.includes('storage') || capabilities.domains.includes('database')) {
-    checks.push('grep -r "database\\|connect\\|init" src/ | head -10');
+    checks.push('rg -n "database|connect|init" src -m 10');
   }
 
   if (capabilities.domains.includes('api') || capabilities.domains.includes('mcp-tools')) {
-    checks.push('find src/ -name "*route*" -o -name "*handler*" -o -name "*tool*" | head -10');
+    checks.push('rg --files src | rg -n "(route|handler|tool)" -m 10');
   }
 
   if (query && /test/i.test(query)) {
-    checks.push('find . -name "*test*" -o -name "*spec*" | head -10');
+    checks.push('rg --files . | rg -n "(test|spec)" -m 10');
   }
 
   // Risk-based checks
   if (risks.score > 30) {
-    checks.push('ls -la .env* 2>/dev/null || echo "No .env files found"');
+    checks.push('rg --files . | rg -n "^\\.env" -m 10');
   }
 
   return {

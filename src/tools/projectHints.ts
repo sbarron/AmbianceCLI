@@ -1731,7 +1731,7 @@ Return JSON:
   private extractContentKeywords(contents: string[]): string[] {
     const keywords = new Set<string>();
     const patterns = [
-      { regex: /test|spec|describe|expect|jest|mocha|chai/i, word: 'test' },
+      { regex: /\b(?:test|spec|describe|expect|jest|mocha|chai)\b/i, word: 'test' },
       { regex: /api|endpoint|route|router|middleware|express|fastify/i, word: 'api' },
       { regex: /component|react|jsx|tsx|props|state|render/i, word: 'component' },
       { regex: /model|schema|database|table|entity|sequelize|mongoose/i, word: 'model' },

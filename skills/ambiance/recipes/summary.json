@@ -7,14 +7,11 @@
   "command": "summary",
   "args": ["${filePath}", "--json"],
   "outputSchema": {
-    "file": "string - file path",
-    "language": "string - detected language",
-    "exports": "array - exported functions, classes, constants",
-    "imports": "array - imported modules and dependencies",
-    "functions": "array - function definitions with signatures",
-    "classes": "array - class definitions",
-    "interfaces": "array - TypeScript interfaces (if applicable)",
-    "complexity": "string - estimated complexity (low/medium/high)"
+    "command": "string - always 'summary' in JSON envelope mode",
+    "exitCode": "number - CLI exit code (0 on success)",
+    "success": "boolean - command success",
+    "summary": "string - file summary output",
+    "metadata": "object - optional symbol and analysis metadata"
   },
   "notes": [
     "Does not require embeddings",

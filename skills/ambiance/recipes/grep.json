@@ -18,17 +18,23 @@
     "pattern": "string - the AST pattern used",
     "language": "string - target language",
     "matches": "array - matched code with file, line, and captures",
-    "totalMatches": "number - total number of matches found"
+    "totalMatches": "number - total number of matches found",
+    "engineUsed": "string - ast-grep or text-fallback",
+    "degraded": "boolean - true when fallback mode is used",
+    "fallbackReason": "string - optional reason for fallback"
   },
   "patternExamples": [
-    "function $NAME($$ARGS) { $$BODY } - match any function",
-    "class $NAME { $$BODY } - match any class",
+    "function $NAME($ARGS) { $BODY } - match function declarations",
+    "class $NAME { $BODY } - match class declarations",
     "import { $IMPORT } from '$MODULE' - match imports",
-    "$OBJ.$METHOD($$ARGS) - match method calls"
+    "$OBJ.$METHOD($ARGS) - match method calls"
   ],
   "notes": [
     "Does not require embeddings",
-    "Use $VAR for single captures, $$VAR for multiple",
-    "Faster and more precise than regex for code patterns"
+    "Use $VAR for single captures and $$$VAR for zero-or-more captures",
+    "Use single quotes in PowerShell to avoid $ expansion",
+    "Faster and more precise than regex for code patterns",
+    "Use after context --format index jump-target selection",
+    "Follow with native lexical search (rg/grep) for exact string-level detail capture"
   ]
 }

@@ -44,7 +44,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       const q = (args?.query || '').toString().slice(0, 200);
       const p = validateAndResolvePath(args.projectPath);
       const f = args?.format || 'enhanced';
-      return `${path.resolve(p)}::${f}::${q}`;
+      const s = args?.autoSync ? 'sync' : 'nosync';
+      return `${path.resolve(p)}::${f}::${q}::${s}`;
     } catch {
       return `default-key`;
     }
@@ -65,6 +66,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         taskType = 'understand',
         maxSimilarChunks = 20,
         maxTokens = 3000,
+        autoSync = false,
+        autoSyncBatchSize = 10,
         // If undefined, we will auto-generate embeddings when missing
         generateEmbeddingsIfMissing,
         useProjectHintsCache = true,
@@ -83,6 +86,96 @@ export async function handleSemanticCompact(args: any): Promise<any> {
 
       // Validate and resolve project path (now required)
       const resolvedProjectPath = validateAndResolvePath(projectPath);
+
+      // Automatic embedding sync when enabled
+      const shouldPerformAutoSync = autoSync || false; // Keep explicit flag for now
+      const { shouldAutoSync: checkAutoSync, isAutoSyncEnabled } = await import('../../local/autoSyncManager');
+
+      // Determine if we should sync: explicit flag OR automatic check
+      let performSync = shouldPerformAutoSync;
+      let autoSyncReason = '';
+
+      if (!performSync && isAutoSyncEnabled()) {
+        // Check if automatic sync is needed
+        try {
+          const { ProjectIdentifier } = await import('../../local/projectIdentifier');
+          const projectInfo = await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+          const projectId = projectInfo.id;
+          const syncCheck = await checkAutoSync(projectId);
+
+          if (syncCheck.shouldSync) {
+            performSync = true;
+            autoSyncReason = syncCheck.reason || 'Automatic sync triggered';
+            logger.info('🔄 Auto-sync triggered', {
+              projectPath: resolvedProjectPath,
+              reason: autoSyncReason,
+              timeSinceLastSync: syncCheck.timeSinceLastSync
+                ? `${Math.round(syncCheck.timeSinceLastSync / 1000)}s`
+                : 'unknown',
+            });
+          }
+        } catch (error) {
+          logger.debug('Auto-sync check failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (performSync) {
+        try {
+          const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+          if (LocalEmbeddingStorage.isEnabled()) {
+            const { checkStaleFiles, createProjectEmbeddings } = await import(
+              '../embeddings/manageEmbeddings'
+            );
+            const { recordSync } = await import('../../local/autoSyncManager');
+            const { ProjectIdentifier } = await import('../../local/projectIdentifier');
+
+            const normalizedBatchSize =
+              typeof autoSyncBatchSize === 'number' && Number.isFinite(autoSyncBatchSize)
+                ? Math.max(1, Math.min(Math.floor(autoSyncBatchSize), 100))
+                : 10;
+
+            const syncResult = await checkStaleFiles({
+              projectPath: resolvedProjectPath,
+              autoUpdate: true,
+              batchSize: normalizedBatchSize,
+            });
+
+            if ((syncResult?.totalFiles ?? 0) === 0 && generateEmbeddingsIfMissing !== false) {
+              logger.info('🧱 Context auto-sync found no tracked embeddings; bootstrapping now', {
+                projectPath: resolvedProjectPath,
+              });
+              await createProjectEmbeddings({
+                projectPath: resolvedProjectPath,
+                batchSize: normalizedBatchSize,
+              });
+            }
+
+            // Record successful sync
+            const projectInfo = await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+            await recordSync(projectInfo.id);
+
+            logger.info('✅ Context auto-sync completed', {
+              projectPath: resolvedProjectPath,
+              reason: autoSyncReason || 'Explicit sync requested',
+              staleCount: syncResult?.staleCount ?? 0,
+              updated: syncResult?.updateResult?.updated ?? false,
+              processedFiles: syncResult?.updateResult?.result?.processedFiles ?? 0,
+              embeddings: syncResult?.updateResult?.result?.embeddings ?? 0,
+            });
+          } else {
+            logger.info('ℹ️ Context auto-sync skipped (local embeddings disabled)', {
+              projectPath: resolvedProjectPath,
+            });
+          }
+        } catch (syncError) {
+          logger.warn('⚠️ Context auto-sync failed; continuing with context generation', {
+            projectPath: resolvedProjectPath,
+            error: syncError instanceof Error ? syncError.message : String(syncError),
+          });
+        }
+      }
 
       // Enhanced mode: Use new local_context implementation if query is provided
       if (query && (format === 'enhanced' || format === 'system-map' || format === 'index') && !folderPath) {
@@ -453,7 +546,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         // Create semantic compactor instance (self-contained, no external deps)
         const compactor = new SemanticCompactor(analysisPath, {
           maxTotalTokens: maxTokens,
-          supportedLanguages: ['typescript', 'javascript', 'python', 'go', 'rust'],
+          supportedLanguages: ['typescript', 'javascript', 'python', 'go', 'rust', 'html', 'markdown'],
           includeSourceCode: false, // Keep lightweight - just signatures and docs
           prioritizeExports: true,
           includeDocstrings: true,

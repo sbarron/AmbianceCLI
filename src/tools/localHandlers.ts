@@ -199,6 +199,16 @@ function getLanguageFromExtension(ext: string): string | null {
     '.jsx': 'javascript',
     '.py': 'python',
     '.md': 'markdown',
+    '.mdx': 'markdown',
+    '.html': 'html',
+    '.htm': 'html',
+    '.astro': 'html',
+    '.vue': 'html',
+    '.svelte': 'html',
+    '.css': 'css',
+    '.scss': 'css',
+    '.sass': 'css',
+    '.less': 'css',
   };
 
   return languageMap[ext] || null;

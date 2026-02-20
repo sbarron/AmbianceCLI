@@ -7,15 +7,18 @@
   "command": "doctor",
   "args": ["--json"],
   "outputSchema": {
+    "command": "string - always 'doctor' in JSON envelope mode",
+    "exitCode": "number - CLI exit code (0 on success)",
     "success": "boolean - overall health status",
-    "version": "string - CLI version",
-    "environment": "object - node version, platform, cwd",
-    "checks": "object - embeddings status, workspace detection",
-    "warnings": "array - non-fatal issues detected"
+    "timestamp": "string - ISO timestamp",
+    "node": "object - node version/platform/arch",
+    "workspace": "object - detected project path and workspace env",
+    "embeddings": "object - sqlite availability and embedding toggles",
+    "dependencies": "object - runtime dependency probes"
   },
   "notes": [
     "Run this first to verify environment setup",
-    "Check 'checks.embeddings.initialized' before using context/debug",
+    "Use embeddings status for detailed index health",
     "Use to troubleshoot CLI issues"
   ]
 }

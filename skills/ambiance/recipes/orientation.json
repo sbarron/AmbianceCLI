@@ -1,0 +1,249 @@
+{
+  "name": "orientation",
+  "defaults": {
+    "format": "json",
+    "maxFiles": 50
+  },
+  "command": "manifest",
+  "args": [
+    "--exports-only",
+    "--max-files",
+    "${maxFiles}",
+    "--format",
+    "flat",
+    "--json",
+    "--project-path",
+    "${projectPath}"
+  ],
+  "purpose": "Initial project understanding through multi-pass discovery",
+  "description": "Systematic workflow for understanding unfamiliar codebases using manifest + multi-pass context queries",
+  "when_to_use": [
+    "First time analyzing a project",
+    "Need to understand overall architecture",
+    "Previous context queries gave poor coverage",
+    "Mixed backend/frontend codebase"
+  ],
+  "phases": [
+    {
+      "name": "quick_scan",
+      "purpose": "Get file structure and top-level exports",
+      "commands": [
+        {
+          "tool": "manifest",
+          "args": "--exports-only --max-files 50 --format flat --json",
+          "expected_output": "List of exported functions/classes across key files",
+          "what_to_look_for": [
+            "Entry point files (main.py, index.ts, app.py, server.ts)",
+            "Service/component naming patterns",
+            "Framework detection (FastAPI, Express, React, etc.)"
+          ]
+        }
+      ],
+      "fallback": {
+        "tool": "hints",
+        "args": "--json --max-files 100",
+        "when": "manifest fails or too noisy"
+      }
+    },
+    {
+      "name": "backend_topology",
+      "purpose": "Understand backend services, schedulers, and runtime loops",
+      "commands": [
+        {
+          "tool": "context",
+          "args_template": "--format index --json --auto-sync",
+          "query_patterns": [
+            "python services main.py health_check scheduler loop run_* process_* execute_*",
+            "node services index.ts server.ts app.ts bootstrap startup",
+            "go services main.go server.go cmd http.ListenAndServe"
+          ],
+          "expected_output": "Entry points, service schedulers, runtime loops, initialization code",
+          "success_criteria": {
+            "min_files": 3,
+            "must_include": ["entry point", "service initialization"]
+          }
+        }
+      ],
+      "skip_if": {
+        "conditions": [
+          "no backend detected (pure frontend project)",
+          "manifest shows only frontend files"
+        ]
+      }
+    },
+    {
+      "name": "infrastructure",
+      "purpose": "Map data stores, message brokers, and event systems",
+      "commands": [
+        {
+          "tool": "context",
+          "args_template": "--format index --json",
+          "query_patterns": [
+            "redis stream xadd xreadgroup kafka rabbitmq postgres mongo",
+            "database connection pool client session transaction",
+            "EventPublisher EventConsumer message queue pubsub subscribe"
+          ],
+          "expected_output": "Database connections, message broker setup, event streams",
+          "success_criteria": {
+            "min_files": 2,
+            "must_include": ["infrastructure setup"]
+          }
+        }
+      ],
+      "skip_if": {
+        "conditions": [
+          "no infrastructure detected in manifest",
+          "pure in-memory/static project"
+        ]
+      }
+    },
+    {
+      "name": "api_wiring",
+      "purpose": "Understand HTTP routes, endpoints, and API structure",
+      "commands": [
+        {
+          "tool": "context",
+          "args_template": "--format index --json",
+          "query_patterns": [
+            "fastapi include_router APIRouter route get post put delete",
+            "express router app.get app.post middleware handler",
+            "flask blueprint route app.route request response",
+            "django urls urlpatterns path include views"
+          ],
+          "expected_output": "API routes, HTTP handlers, route wiring, middleware",
+          "success_criteria": {
+            "min_files": 2,
+            "must_include": ["routes or endpoints"]
+          }
+        }
+      ],
+      "skip_if": {
+        "conditions": [
+          "no web framework detected",
+          "pure CLI tool or library"
+        ]
+      }
+    },
+    {
+      "name": "frontend_structure",
+      "purpose": "Map UI components, pages, and client-side routing",
+      "commands": [
+        {
+          "tool": "context",
+          "args_template": "--format index --json",
+          "query_patterns": [
+            "react component router route page dashboard",
+            "vue component router pages composable",
+            "svelte component routes layout page",
+            "angular component module routing service"
+          ],
+          "expected_output": "UI components, pages, client routing, state management",
+          "success_criteria": {
+            "min_files": 3,
+            "must_include": ["components or pages"]
+          }
+        }
+      ],
+      "skip_if": {
+        "conditions": [
+          "no frontend framework detected",
+          "pure backend/API project"
+        ]
+      }
+    }
+  ],
+  "query_construction_rules": {
+    "do": [
+      "Use entry point file names (main.py, index.ts, app.py, server.ts)",
+      "Use runtime verbs (run_, loop, execute_, process_, handle_)",
+      "Use infrastructure terms (redis, postgres, stream, queue)",
+      "Use framework-specific terms (FastAPI, Express, React, router)",
+      "Separate backend and frontend into different queries"
+    ],
+    "dont": [
+      "Mix backend + frontend symbols in one query",
+      "Use only class names without runtime context",
+      "Use generic terms (Service, Manager, Handler) without specifics",
+      "Use bare type/interface names (IUserRepository)",
+      "Query with more than 2 intents at once"
+    ]
+  },
+  "example_workflows": {
+    "python_fastapi_react": [
+      "1. manifest --exports-only --format flat --json",
+      "2. context \"python services main.py health_check scheduler loop run_ingestion_job\" --format index --json",
+      "3. context \"redis stream xadd xreadgroup EventPublisher EventConsumer\" --format index --json",
+      "4. context \"fastapi include_router APIRouter monitoring charts health_checker\" --format index --json",
+      "5. context \"react router Dashboard components pages apiClient\" --format index --json"
+    ],
+    "node_express_monolith": [
+      "1. manifest --exports-only --format tree --json",
+      "2. context \"node server.ts index.ts app.ts bootstrap express createServer\" --format index --json",
+      "3. context \"express router app.get app.post middleware\" --format index --json",
+      "4. context \"postgres database connection pool transaction query\" --format index --json"
+    ],
+    "microservices": [
+      "1. manifest --exports-only --file-pattern \"**/services/**/*.py\" --json",
+      "2. context \"service_a main.py run_* process_* health_check\" --format index --json",
+      "3. context \"service_b main.py run_* process_* health_check\" --format index --json",
+      "4. context \"rabbitmq kafka stream queue pubsub message\" --format index --json"
+    ]
+  },
+  "troubleshooting": {
+    "poor_coverage": {
+      "symptom": "Context returns only 1-2 files",
+      "likely_causes": [
+        "Query too generic or mixed-domain",
+        "Using class names without runtime verbs",
+        "Embeddings not synced (try --auto-sync)"
+      ],
+      "fixes": [
+        "Split query into domain-specific passes",
+        "Add entry point file names to query",
+        "Use runtime verbs (run_, loop, execute_)",
+        "Run manifest first to identify key files"
+      ]
+    },
+    "wrong_focus": {
+      "symptom": "Context focuses on wrong domain (e.g., frontend when asking about backend)",
+      "likely_causes": [
+        "Sticky symbol dominating results (e.g., APIClient)",
+        "Mixed terms confusing retrieval"
+      ],
+      "fixes": [
+        "Remove frontend terms from backend query",
+        "Use framework-specific terms (FastAPI vs React)",
+        "Add infrastructure anchors (redis, postgres)"
+      ]
+    },
+    "no_results": {
+      "symptom": "Context returns empty or minimal results",
+      "likely_causes": [
+        "Embeddings not generated or stale",
+        "Query terms don't match codebase vocabulary",
+        "File exclusions too aggressive"
+      ],
+      "fixes": [
+        "Run: ambiance embeddings status --json",
+        "Use manifest to see what's actually available",
+        "Try hints instead for high-level overview"
+      ]
+    }
+  },
+  "success_metrics": {
+    "good_orientation": {
+      "backend_topology": "3-6 files covering entry points and services",
+      "infrastructure": "2-4 files showing connections and setup",
+      "api_wiring": "3-5 files with routes and handlers",
+      "frontend_structure": "4-8 files with components and routing"
+    },
+    "total_coverage": "12-25 unique files across all passes",
+    "processing_time": "< 30 seconds for all passes"
+  },
+  "next_steps_after_orientation": [
+    "Use grep for specific symbol searches",
+    "Use summary for detailed file analysis",
+    "Use context with narrow queries for specific features",
+    "Create context packs for frequently accessed areas"
+  ]
+}

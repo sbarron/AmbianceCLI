@@ -8,6 +8,16 @@ Versioned skill templates for CLI-first agent workflows.
 - [AGENT_GUIDE.md](./AGENT_GUIDE.md) - Quick decision-making reference for agents
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) - Error diagnosis and recovery patterns
 
+**Machine-readable source of truth (recommended for agents):**
+- `ambiance skill list --json`
+- `ambiance skill workflow <name> --json`
+- `ambiance skill recipe <name> --json`
+
+**CLI help discovery (quickest way to inspect command flags):**
+- `ambiance --help`
+- `ambiance --help --expanded`
+- `ambiance <command> --help` (examples: `ambiance context --help`, `ambiance embeddings --help`)
+
 **This document** provides comprehensive command reference, output schemas, and workflow examples.
 
 ## Table of Contents
@@ -32,14 +42,14 @@ ambiance doctor --json
 # 2. Check embedding status for the project
 ambiance embeddings status --json --project-path ./
 
-# 3. Create embeddings if needed (first-time setup)
-ambiance embeddings create --json --project-path ./
+# 3. Create embeddings if needed (first-time setup, non-interactive)
+ambiance embeddings create --json --project-path ./ --force true
 
 # 4. Validate skill templates
 ambiance skill verify --json
 ```
 
-**Important**: Without embeddings, `context` and `debug` commands will fall back to basic text search with reduced accuracy. The `doctor` command will indicate if embeddings are missing or stale.
+**Important**: Without embeddings, `context` and `debug` commands will fall back to basic text search with reduced accuracy. Use `embeddings status` to check index readiness before semantic retrieval.
 
 ## Quick Reference for Agents
 
@@ -48,12 +58,49 @@ ambiance skill verify --json
 | Check environment | `doctor` | First run, troubleshooting | No |
 | Project overview | `hints` | First time in codebase, navigation | No |
 | Understand specific code | `context "<query>"` | Semantic code search, feature understanding | Yes (recommended) |
+| Navigate to exact locations | `context "<query>" --format index` | Get file:line jump targets and next actions | Yes (recommended) |
 | Debug an error | `debug "<log>"` | Extract context from error logs | Yes (recommended) |
-| Find code patterns | `grep "<pattern>"` | AST-based structural search | No |
+| Find AST structures | `grep "<pattern>"` | Structural/capture-based search after index navigation | No |
+| Fill exact text details | native `rg -n "<term>"` | String-level verification in files selected by index/grep | No |
 | Analyze frontend | `frontend` | UI component analysis | No |
 | Single file summary | `summary <file>` | Quick file overview | No |
 | Manage embeddings | `embeddings <action>` | Setup, maintenance, status checks | N/A |
 | Context packs | `packs <action>` | Save/load reusable context | No |
+
+## Search Routing Policy
+
+Use this order for agent search decisions (embedding-enabled):
+
+1. `context --format index` first for jump targets and file prioritization.
+2. `grep` second for AST shape/captures.
+3. Native text search third: `rg -n "<term>" <path>` (fallback: `grep -R`) to fill exact details.
+
+Fallback when embeddings/index are unavailable: start with native lexical search.
+
+## Query Strategy: Semantic Anchor Clustering
+
+For embedding retrieval, use query strings that look like likely code/docs terms rather than conversational questions.
+
+- Prefer keyword-dense anchors over prose questions.
+- Include project-specific symbols and library names when known.
+- Combine domain intent + technical identifiers.
+
+Examples:
+- Conversational (weak): `What is the status of roadmap progress?`
+- Anchor cluster (strong): `roadmap milestones implementation status PHASE2 TODO`
+- Anchored with symbols (strong): `Supabase session middleware jwt validateToken cosineSimilarity`
+
+## Index Hygiene
+
+Use this maintenance order:
+
+1. Status check first for deep investigations:
+   `ambiance embeddings status --json --project-path ./`
+2. Prefer incremental freshness for day-to-day work:
+   `ambiance context "<query>" --json --project-path ./ --auto-sync`
+   or `ambiance embeddings update --json --project-path ./`
+3. Full rebuild only when needed:
+   use `ambiance embeddings create --json --project-path ./ --force true` for migration/incompatible-model/corruption scenarios.
 
 ## Command Reference
 
@@ -70,24 +117,25 @@ ambiance doctor --json
 ```json
 {
   "success": true,
-  "version": "1.0.0",
-  "environment": {
-    "node": "v20.0.0",
-    "platform": "linux",
-    "cwd": "/path/to/project"
+  "timestamp": "2026-02-06T22:56:22.919Z",
+  "node": {
+    "version": "v22.12.0",
+    "platform": "win32",
+    "arch": "x64"
   },
-  "checks": {
-    "embeddings": {
-      "initialized": true,
-      "fileCount": 1234,
-      "stale": false
-    },
-    "workspace": {
-      "detected": true,
-      "path": "/path/to/project"
+  "workspace": {
+    "detectedProjectPath": "C:\\path\\to\\project"
+  },
+  "embeddings": {
+    "useLocalEmbeddings": "true",
+    "sqliteBindings": {
+      "available": true
     }
   },
-  "warnings": []
+  "dependencies": {
+    "treeSitter": { "available": true },
+    "transformers": { "available": true }
+  }
 }
 ```
 
@@ -243,6 +291,7 @@ ambiance context "authentication" --format index --project-path ./ --max-tokens 
 - Building code navigation UIs
 - Confidence-based result filtering
 - Need actionable "next steps"
+- Choosing where to run native `rg` or manual file inspection before AST searches
 
 **When to use JSON format**:
 - Minimize token usage for LLM prompts
@@ -332,14 +381,27 @@ ambiance debug "TypeError: Cannot read property 'token' of undefined at auth.ts:
 
 **Usage**:
 ```bash
-ambiance grep "function \$NAME(\$\$ARGS) { \$\$BODY }" \
+ambiance grep "function \$NAME(\$ARGS) { \$BODY }" \
   --json --project-path ./ --language typescript
+
+# Rule-mode (file)
+ambiance grep --rule-path ./rules/no-console.yml \
+  --json --project-path ./ --language typescript
+
+# Rule-mode (inline JSON)
+ambiance grep --rule-json '{"id":"no-console","language":"typescript","rule":{"pattern":"console.$METHOD($ARGS)"}}' \
+  --json --project-path . --file-pattern "src/**/*.ts"
+```
+
+```powershell
+# PowerShell: prefer single quotes so $ metavariables are not expanded
+ambiance grep 'function $NAME($ARGS) { $BODY }' --json --project-path . --language typescript
 ```
 
 **Output Schema**:
 ```json
 {
-  "pattern": "function $NAME($$ARGS) { $$BODY }",
+  "pattern": "function $NAME($ARGS) { $BODY }",
   "language": "typescript",
   "matches": [
     {
@@ -353,7 +415,9 @@ ambiance grep "function \$NAME(\$\$ARGS) { \$\$BODY }" \
       }
     }
   ],
-  "totalMatches": 23
+  "totalMatches": 23,
+  "engineUsed": "ast-grep",
+  "degraded": false
 }
 ```
 
@@ -361,6 +425,7 @@ ambiance grep "function \$NAME(\$\$ARGS) { \$\$BODY }" \
 - Find all functions/classes matching a pattern
 - Locate specific code structures
 - Refactoring analysis
+- Not recommended as first-pass text search in embedding-enabled sessions; run after index navigation
 
 ### `frontend` - Frontend Pattern Analysis
 
@@ -427,7 +492,7 @@ ambiance summary src/auth.ts --json
 ambiance embeddings status --json --project-path ./
 
 # Create embeddings
-ambiance embeddings create --json --project-path ./
+ambiance embeddings create --json --project-path ./ --force true
 
 # Update stale embeddings
 ambiance embeddings update --json --project-path ./
@@ -436,12 +501,21 @@ ambiance embeddings update --json --project-path ./
 **Status Output Schema**:
 ```json
 {
-  "initialized": true,
-  "fileCount": 1234,
-  "embeddingCount": 1234,
-  "stale": false,
-  "lastUpdated": "2026-02-04T10:30:00Z",
-  "estimatedSize": "45MB"
+  "command": "embeddings",
+  "exitCode": 0,
+  "success": true,
+  "projectId": "86bc5cbe7850",
+  "projectPath": "C:\\path\\to\\project",
+  "stats": {
+    "totalChunks": 3000,
+    "totalFiles": 183,
+    "lastUpdated": "2026-02-12T13:25:19.000Z"
+  },
+  "coverage": {
+    "embeddedFiles": 184,
+    "indexableFiles": 241,
+    "coveragePercent": 76.35
+  }
 }
 ```
 
@@ -608,7 +682,7 @@ ambiance context "authentication security validation error handling" \
   --json --project-path ./ --max-tokens 5000 --task-type review
 
 # Step 2: Find all authentication-related functions
-ambiance grep "function \$NAME(\$\$ARGS) { \$\$BODY }" \
+ambiance grep "function \$NAME(\$ARGS) { \$BODY }" \
   --json --project-path ./ --language typescript | \
   # (filter for auth-related files)
 
@@ -626,9 +700,8 @@ ambiance frontend --json --project-path ./
 ### Exit Codes
 
 - **0**: Success
-- **1**: Invalid arguments, missing project, or usage error
-- **2**: Runtime error (embeddings not initialized, file not found, etc.)
-- **3**: Invalid JSON output or internal error
+- **1**: Runtime error
+- **2**: Usage error (invalid arguments, unsupported command combinations)
 
 ### Common Error Scenarios
 
@@ -642,12 +715,12 @@ ambiance context "auth" --json --project-path ./
 ```json
 {
   "error": "Embeddings not initialized for project",
-  "suggestion": "Run: ambiance embeddings create --json --project-path ./",
+  "suggestion": "Run: ambiance embeddings create --json --project-path ./ --force true",
   "fallback": "Using basic text search (results may be less accurate)"
 }
 ```
 
-**Resolution**: Run `ambiance embeddings create --json --project-path ./`
+**Resolution**: Run `ambiance embeddings create --json --project-path ./ --force true`
 
 #### Invalid Project Path
 
@@ -697,9 +770,14 @@ ambiance embeddings status --json --project-path ./
 **Output**:
 ```json
 {
-  "initialized": true,
-  "stale": true,
-  "staleSince": "2026-01-15T10:00:00Z",
+  "command": "embeddings",
+  "success": true,
+  "stats": {
+    "totalChunks": 0
+  },
+  "coverage": {
+    "coveragePercent": 42.0
+  },
   "suggestion": "Run: ambiance embeddings update --json --project-path ./"
 }
 ```
@@ -721,7 +799,7 @@ function runAmbianceWithFallback(args) {
       // Check for embeddings error
       if (errorJson.error?.includes('Embeddings not initialized')) {
         console.log('Creating embeddings...');
-        spawnSync('ambiance', ['embeddings', 'create', '--json', '--project-path', './']);
+        spawnSync('ambiance', ['embeddings', 'create', '--json', '--project-path', './', '--force', 'true']);
         // Retry original command
         return runAmbianceWithFallback(args);
       }
@@ -742,10 +820,12 @@ All commands with `--json` flag return structured JSON. See [Command Reference](
 
 ### Common Fields
 
-All JSON outputs include:
+JSON outputs generally include:
 - `success`: Boolean indicating command success (may be omitted if `true`)
 - `error`: String describing error (only present on failure)
 - `warnings`: Array of non-fatal warnings (optional)
+- `command`: Top-level command name in JSON envelope mode
+- `exitCode`: Numeric CLI exit code in JSON envelope mode
 
 ## Integration Examples
 
@@ -780,10 +860,11 @@ function runAmbiance(args) {
 }
 
 // Check environment
-const doctor = runAmbiance(['doctor']);
-if (!doctor.checks.embeddings.initialized) {
+const status = runAmbiance(['embeddings', 'status', '--project-path', process.cwd()]);
+const hasEmbeddings = Boolean(status.stats?.totalChunks > 0);
+if (!hasEmbeddings) {
   console.log('Initializing embeddings...');
-  runAmbiance(['embeddings', 'create', '--project-path', process.cwd()]);
+  runAmbiance(['embeddings', 'create', '--project-path', process.cwd(), '--force', 'true']);
 }
 
 // Get project hints
@@ -825,9 +906,10 @@ def run_ambiance(args):
 
     return json.loads(result.stdout)
 
-# Check environment
-doctor = run_ambiance(['doctor'])
-print(f"Environment ready: {doctor['checks']['embeddings']['initialized']}")
+# Check embedding readiness
+status = run_ambiance(['embeddings', 'status', '--project-path', '.'])
+has_embeddings = status.get('stats', {}).get('totalChunks', 0) > 0
+print(f"Embeddings ready: {has_embeddings}")
 
 # Get context
 context = run_ambiance([
@@ -863,14 +945,17 @@ ambiance skill verify --json
 Expected output:
 ```json
 {
+  "command": "skill",
+  "exitCode": 0,
   "success": true,
-  "version": 1,
-  "workflows": ["understand", "debug", "implement", "review"],
-  "recipes": ["context", "hints", "debug", "grep", "frontend", "summary", "embeddings-status"],
-  "validation": {
-    "syntaxValid": true,
-    "schemasValid": true,
-    "commandsExist": true
+  "timestamp": "2026-02-06T22:56:22.923Z",
+  "doctor": {
+    "success": true,
+    "timestamp": "2026-02-06T22:56:22.919Z"
+  },
+  "skills": {
+    "workflows": ["debug.json", "implement.json", "review.json", "understand.json"],
+    "recipes": ["context.json", "debug.json", "doctor.json", "embeddings-status.json"]
   }
 }
 ```

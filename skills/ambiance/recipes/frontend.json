@@ -17,12 +17,11 @@
     "${maxFiles}"
   ],
   "outputSchema": {
-    "framework": "string - detected framework (React, Vue, Angular, etc.)",
-    "components": "array - component files and their types",
-    "stateManagement": "string - detected state library (Redux, Zustand, etc.)",
-    "routing": "string - routing library if detected",
-    "patterns": "array - common patterns found (hooks, HOCs, etc.)",
-    "insights": "array - architectural observations"
+    "command": "string - always 'frontend' in JSON envelope mode",
+    "exitCode": "number - CLI exit code (0 on success)",
+    "success": "boolean - command success",
+    "content": "array - formatted frontend analysis blocks",
+    "metadata": "object - optional analysis metadata"
   },
   "notes": [
     "Does not require embeddings",

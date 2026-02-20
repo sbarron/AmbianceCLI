@@ -28,6 +28,17 @@ function runCli(args, extraEnv) {
     }
   );
 
+  if (result.error) {
+    const details = [
+      `spawnSync failed: ${result.error.message}`,
+      `code=${result.error.code || 'unknown'}`,
+      `syscall=${result.error.syscall || 'unknown'}`,
+      `path=${result.error.path || process.execPath}`,
+      `args=${JSON.stringify(['-r', 'ts-node/register', 'src/cli.ts', ...args])}`,
+    ].join('\n');
+    throw new Error(details);
+  }
+
   return {
     status: result.status,
     stdout: result.stdout,

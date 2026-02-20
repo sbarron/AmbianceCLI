@@ -424,7 +424,7 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     const allMatches = [...astMatches, ...extraCandidates];
     const candidates = await rankCandidates(allMatches, indices, request.query, plan);
 
-    // 6. Select top jump targets (respect maxSimilarChunks) with enhancements
+  // 6. Select top jump targets (respect maxSimilarChunks) with enhancements
     let jumpTargets = await selectJumpTargets(candidates, {
       max: Math.max(1, Math.min(request.maxSimilarChunks, 20)),
       query: request.query,
@@ -433,14 +433,22 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
 
     if (jumpTargets.length === 0 && candidates.length > 0) {
       const candidate = candidates[0];
-      const snippet = await extractSnippetPreview(candidate, indices.files);
+      const range = await resolveCandidateLineRange(candidate, indices.files);
+      const lineStart = range.start ?? candidate.start ?? 1;
+      const lineEnd = range.end ?? candidate.end ?? lineStart;
+      const previewCandidate = {
+        ...candidate,
+        start: lineStart,
+        end: lineEnd,
+      };
+      const snippet = await extractSnippetPreview(previewCandidate, indices.files);
       const relevance = calculateRelevance(candidate, request.query);
       jumpTargets = [
         {
           file: candidate.file,
           symbol: candidate.symbol,
-          start: candidate.start,
-          end: candidate.end,
+          start: lineStart,
+          end: lineEnd,
           role: candidate.role || inferRoleFromSymbol(candidate.symbol),
           confidence: candidate.score,
           relevance,
@@ -747,6 +755,7 @@ async function selectJumpTargets(
   // 3. Create jump targets with enhancements
   const targets = await Promise.all(
     topCandidates.map(async candidate => {
+      const range = await resolveCandidateLineRange(candidate, options.files || []);
       // Calculate relevance based on query match (if query provided)
       let relevance: number | undefined;
       if (options.query) {
@@ -755,15 +764,22 @@ async function selectJumpTargets(
 
       // Extract snippet preview (5-10 lines)
       let snippet: string | undefined;
-      if (options.files && candidate.start && candidate.end) {
-        snippet = await extractSnippetPreview(candidate, options.files);
+      if (options.files && range.start && range.end) {
+        const lineStart = range.start ?? candidate.start ?? 1;
+        const lineEnd = range.end ?? candidate.end ?? lineStart;
+        const previewCandidate = {
+          ...candidate,
+          start: lineStart,
+          end: lineEnd,
+        };
+        snippet = await extractSnippetPreview(previewCandidate, options.files);
       }
 
       return {
         file: candidate.file,
         symbol: candidate.symbol,
-        start: candidate.start,
-        end: candidate.end,
+        start: range.start,
+        end: range.end,
         role: candidate.role || inferRoleFromSymbol(candidate.symbol),
         confidence: candidate.score,
         relevance,
@@ -774,6 +790,52 @@ async function selectJumpTargets(
   );
 
   return targets;
+}
+
+async function resolveCandidateLineRange(
+  candidate: CandidateSymbol,
+  files: FileInfo[]
+): Promise<{ start?: number; end?: number }> {
+  if (!candidate.start || candidate.start < 1) {
+    return { start: 1, end: 1 };
+  }
+
+  const fileInfo = files.find(f => f.absPath === candidate.file || f.relPath === candidate.file);
+  if (!fileInfo) {
+    return { start: candidate.start, end: candidate.end || candidate.start };
+  }
+
+  try {
+    const fs = await import('fs').then(m => m.promises);
+    const content = await fs.readFile(fileInfo.absPath, 'utf-8');
+    const totalLines = content.split('\n').length;
+
+    const rawStart = candidate.start;
+    const rawEnd = candidate.end || rawStart;
+
+    // If range already appears to be line-based, keep it.
+    if (rawStart <= totalLines && rawEnd <= totalLines + 1) {
+      return {
+        start: Math.max(1, rawStart),
+        end: Math.max(1, Math.min(totalLines, rawEnd)),
+      };
+    }
+
+    const toLine = (offset: number) => {
+      const clamped = Math.max(0, Math.min(offset, content.length));
+      let line = 1;
+      for (let i = 0; i < clamped; i++) {
+        if (content.charCodeAt(i) === 10) line += 1; // '\n'
+      }
+      return line;
+    };
+
+    const lineStart = toLine(rawStart);
+    const lineEnd = Math.max(lineStart, toLine(rawEnd));
+    return { start: lineStart, end: lineEnd };
+  } catch {
+    return { start: candidate.start, end: candidate.end || candidate.start };
+  }
 }
 
 /**
@@ -897,14 +959,14 @@ function computeNextActions(targets: JumpTarget[], taskType: string): NextAction
   // Add task-specific checks
   switch (taskType) {
     case 'debug':
-      checks.push('npm test 2>&1 | head -20');
-      checks.push('grep -r "TODO\\|FIXME" src/ | head -10');
+      checks.push('npm test');
+      checks.push('rg -n "TODO|FIXME" src -m 10');
       break;
     case 'understand':
-      checks.push('find src/ -name "*.md" -o -name "README*" | head -5');
+      checks.push('rg --files src | rg -n "(README|\\.md$)" -m 5');
       break;
     case 'trace':
-      checks.push('grep -r "console.log\\|logger" src/ | head -10');
+      checks.push('rg -n "console\\.log|logger" src -m 10');
       break;
   }
 

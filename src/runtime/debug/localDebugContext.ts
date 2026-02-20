@@ -15,6 +15,7 @@ import { validateAndResolvePath } from '../utils/pathUtils';
 import { LocalEmbeddingGenerator, GenerationOptions } from '../../local/embeddingGenerator';
 import { LocalEmbeddingStorage, SimilarChunk } from '../../local/embeddingStorage';
 import { ProjectIdentifier } from '../../local/projectIdentifier';
+import { FileDiscovery } from '../../core/compactor/fileDiscovery';
 
 const DEFAULT_SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py']);
 const DEFAULT_IGNORED_DIRS = new Set([
@@ -37,44 +38,11 @@ async function discoverSourceFiles(
     ignoredDirs?: Set<string>;
   } = {}
 ): Promise<string[]> {
-  const maxFiles = options.maxFiles ?? 10000;
-  const extensions = options.extensions ?? DEFAULT_SOURCE_EXTENSIONS;
-  const ignoredDirs = options.ignoredDirs ?? DEFAULT_IGNORED_DIRS;
-
-  const results: string[] = [];
-
-  async function walk(dir: string): Promise<void> {
-    if (results.length >= maxFiles) return;
-
-    let entries: fsSync.Dirent[];
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (results.length >= maxFiles) return;
-
-      if (entry.isDirectory()) {
-        if (ignoredDirs.has(entry.name)) continue;
-        if (entry.name.startsWith('.')) {
-          // Skip hidden directories by default (e.g. .cache), but keep common ones like .github if needed later.
-          if (entry.name !== '.github') continue;
-        }
-        await walk(path.join(dir, entry.name));
-        continue;
-      }
-
-      if (!entry.isFile()) continue;
-      const ext = path.extname(entry.name).toLowerCase();
-      if (!extensions.has(ext)) continue;
-      results.push(path.join(dir, entry.name));
-    }
-  }
-
-  await walk(baseDir);
-  return results;
+  const discovery = new FileDiscovery(baseDir);
+  let files = await discovery.discoverFiles();
+  files = discovery.sortByRelevance(files);
+  const max = options.maxFiles ?? 10000;
+  return files.slice(0, max).map(f => f.absPath);
 }
 
 // Optional tree-sitter imports to avoid hard dependency at runtime
@@ -469,7 +437,7 @@ async function searchSymbols(
     }
   }
 
-  return matches.slice(0, maxMatches);
+  return matches.slice(0, 500);
 }
 
 /**
@@ -569,7 +537,9 @@ async function ensureEmbeddingsForProject(
       preferSymbolBoundaries: true,
       batchSize: 10,
       rateLimit: 1000,
-      filePatterns: ['**/*.{ts,tsx,js,jsx,py}'],
+      filePatterns: [
+        '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
+      ],
       force: false,
     };
 

@@ -7,10 +7,10 @@ This guide helps agents diagnose and resolve common issues when using the Ambian
 ```
 1. Run `ambiance doctor --json`
    ├─ success: false → See [Installation Issues](#installation-issues)
-   └─ success: true
-      ├─ checks.embeddings.initialized: false → See [Embeddings Not Initialized](#embeddings-not-initialized)
-      ├─ checks.embeddings.stale: true → See [Stale Embeddings](#stale-embeddings)
-      └─ All checks pass → See [Command-Specific Issues](#command-specific-issues)
+   └─ success: true → run `ambiance embeddings status --json --project-path ./`
+      ├─ stats.totalChunks is 0/missing → See [Embeddings Not Initialized](#embeddings-not-initialized)
+      ├─ coverage.coveragePercent is low → See [Stale Embeddings](#stale-embeddings)
+      └─ Status healthy → See [Command-Specific Issues](#command-specific-issues)
 ```
 
 ## Installation Issues
@@ -62,7 +62,7 @@ npm cache clean --force
 **Resolution**:
 ```bash
 # Create embeddings for the project
-ambiance embeddings create --json --project-path ./
+ambiance embeddings create --json --project-path ./ --force true
 
 # Verify creation
 ambiance embeddings status --json --project-path ./
@@ -71,9 +71,14 @@ ambiance embeddings status --json --project-path ./
 **Expected output**:
 ```json
 {
-  "initialized": true,
-  "fileCount": 1234,
-  "stale": false
+  "command": "embeddings",
+  "success": true,
+  "stats": {
+    "totalChunks": 1234
+  },
+  "coverage": {
+    "coveragePercent": 80.0
+  }
 }
 ```
 
@@ -82,10 +87,11 @@ ambiance embeddings status --json --project-path ./
 // Auto-initialize embeddings if needed
 function ensureEmbeddings(projectPath) {
   const status = runAmbiance(['embeddings', 'status', '--project-path', projectPath]);
+  const hasEmbeddings = (status.stats?.totalChunks || 0) > 0;
 
-  if (!status.initialized) {
+  if (!hasEmbeddings) {
     console.log('Initializing embeddings (this may take a few minutes)...');
-    runAmbiance(['embeddings', 'create', '--project-path', projectPath]);
+    runAmbiance(['embeddings', 'create', '--project-path', projectPath, '--force', 'true']);
   }
 }
 ```
@@ -114,7 +120,7 @@ ambiance embeddings update --json --project-path ./
 **When to update**:
 - After significant code changes
 - Before important context queries
-- If `doctor` reports stale embeddings
+- If `embeddings status` reports low coverage
 - Periodically during long sessions
 
 ### Embedding Creation Fails
@@ -188,7 +194,15 @@ for (const query of queries) {
 }
 
 // If all fail, use grep for pattern matching
-return runAmbiance(['grep', 'function.*auth', '--json', '--project-path', './']);
+return runAmbiance([
+  'grep',
+  'function $NAME($ARGS) { $BODY }',
+  '--json',
+  '--project-path',
+  './',
+  '--file-pattern',
+  'src/auth/**/*.ts'
+]);
 ```
 
 ### `debug` Doesn't Extract File/Line Info
@@ -242,7 +256,7 @@ function analyzeError(errorLog) {
 
 | Too Broad | Better |
 |-----------|--------|
-| `$FUNC($$ARGS)` | `function validateToken($$ARGS)` |
+| `$FUNC($ARGS)` | `function validateToken($ARGS) { $BODY }` |
 | `class $NAME` | `class $NAME extends BaseController` |
 | `import $X` | `import { $IMPORT } from 'express'` |
 
@@ -254,7 +268,15 @@ function findWithConstraints(basePattern, maxResults = 50) {
 
   if (result.totalMatches > maxResults) {
     // Add file path constraint
-    result = runAmbiance(['grep', basePattern, '--json', '--project-path', './src/auth']);
+    result = runAmbiance([
+      'grep',
+      basePattern,
+      '--json',
+      '--project-path',
+      './',
+      '--file-pattern',
+      'src/auth/**/*.ts'
+    ]);
   }
 
   return result;
@@ -308,7 +330,7 @@ function validateProjectType(hints) {
 
 2. **Stale embeddings triggering regeneration**:
    - **Resolution**: Run `embeddings update` explicitly
-   - Check `doctor` for stale status
+   - Check `embeddings status` coverage and chunk counts
 
 3. **First run after installation**:
    - **Expected**: Initial embedding creation is slow
@@ -459,6 +481,9 @@ function getCodeContext(query, projectPath) {
 // Run at start of agent session
 function checkEnvironment(projectPath) {
   const doctor = runAmbiance(['doctor', '--json']);
+  const status = runAmbiance(['embeddings', 'status', '--json', '--project-path', projectPath]);
+  const hasEmbeddings = (status.stats?.totalChunks || 0) > 0;
+  const coveragePercent = status.coverage?.coveragePercent || 0;
 
   const issues = [];
 
@@ -466,18 +491,19 @@ function checkEnvironment(projectPath) {
     issues.push('CLI environment unhealthy');
   }
 
-  if (!doctor.checks.embeddings.initialized) {
+  if (!hasEmbeddings) {
     issues.push('Embeddings not initialized');
-    runAmbiance(['embeddings', 'create', '--json', '--project-path', projectPath]);
-  } else if (doctor.checks.embeddings.stale) {
-    issues.push('Embeddings stale');
+    runAmbiance(['embeddings', 'create', '--json', '--project-path', projectPath, '--force', 'true']);
+  } else if (coveragePercent < 60) {
+    issues.push('Embeddings coverage is low');
     runAmbiance(['embeddings', 'update', '--json', '--project-path', projectPath]);
   }
 
   return {
     ready: issues.length === 0,
     issues,
-    doctor
+    doctor,
+    status
   };
 }
 ```

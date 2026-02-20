@@ -1,6 +1,6 @@
 {
   "name": "ambiance-cli",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "CLI for code context with semantic search, AI analysis and summary",
   "main": "dist/src/cli.js",
   "types": "dist/src/cli.d.ts",
@@ -10,6 +10,7 @@
   "keywords": [
     "rag",
     "cli",
+    "agent-skill",
     "code-analysis",
     "context",
     "semantic-search",

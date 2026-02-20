@@ -23,6 +23,11 @@
       "json": true
     },
     {
+      "name": "manifest",
+      "description": "Project-wide function/method listing for navigation",
+      "json": true
+    },
+    {
       "name": "debug",
       "description": "Debug context analysis from error logs",
       "json": true

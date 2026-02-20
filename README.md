@@ -18,6 +18,28 @@ ambiance doctor --json
 ambiance skill verify --json
 ```
 
+## Automatic Embedding Sync
+
+When `USE_LOCAL_EMBEDDINGS=true` (default), Ambiance automatically keeps embeddings fresh:
+
+- **Auto-sync threshold**: Embeddings are checked and updated if they haven't been synced in 10 minutes (configurable)
+- **Applies to**: All tools that use embeddings (primarily `context`)
+- **Smart caching**: Avoids excessive checks (minimum 30s between checks)
+- **Zero config**: Works automatically, no manual intervention needed
+
+### Configuration
+
+```bash
+# Disable auto-sync (embeddings still work, but may be stale)
+export EMBEDDING_AUTO_SYNC=false
+
+# Change staleness threshold (default: 600000ms = 10 minutes)
+export EMBEDDING_AUTO_SYNC_THRESHOLD_MS=300000  # 5 minutes
+
+# Or use explicit --auto-sync flag
+ambiance context "query" --auto-sync
+```
+
 ## Core Commands
 
 All commands support JSON mode via `--json`.
@@ -25,6 +47,7 @@ All commands support JSON mode via `--json`.
 - `ambiance context "<query>" --json --project-path <path>`
 - `ambiance hints --json --project-path <path>`
 - `ambiance summary <file> --json`
+- `ambiance manifest --json --project-path <path>` - **NEW**: Project-wide function listing
 - `ambiance debug "<log text>" --json --project-path <path>`
 - `ambiance grep "<ast pattern>" --json --project-path <path>`
 - `ambiance frontend --json --project-path <path>`

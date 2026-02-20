@@ -37,6 +37,9 @@ export interface AstGrepResult {
   executionTime: number;
   pattern: string;
   language?: string;
+  engineUsed?: 'ast-grep' | 'text-fallback';
+  degraded?: boolean;
+  fallbackReason?: string;
   error?: string;
 }
 
@@ -234,6 +237,109 @@ interface PatternValidationResult {
   error?: string;
   suggestions?: string[];
   warning?: string;
+}
+
+const AST_GREP_GENERAL_EXAMPLES = [
+  'function $NAME($ARGS) { $BODY }',
+  'export const $NAME = $VALUE',
+  'import $NAME from "$MODULE"',
+  'const $NAME = ($ARGS) => $BODY',
+  'new $CLASS($ARGS)',
+];
+
+const AST_GREP_LANGUAGE_EXAMPLES: Record<string, string[]> = {
+  ts: ['interface $NAME { $BODY }', 'type $NAME = $VALUE'],
+  tsx: ['export function $NAME($PROPS) { return $JSX }'],
+  js: ['module.exports = $VALUE', '$OBJ.$METHOD($ARGS)'],
+  jsx: ['export function $NAME($PROPS) { return $JSX }'],
+  py: ['def ', 'class $NAME:'],
+  go: ['func $NAME($ARGS) $RET { $BODY }'],
+  rs: ['fn $NAME($ARGS) -> $RET { $BODY }'],
+  java: ['class $NAME { $BODY }'],
+  c: ['$RET $NAME($ARGS) { $BODY }'],
+  cpp: ['class $NAME { $BODY }'],
+  php: ['function $NAME($ARGS) { $BODY }'],
+  rb: ['def $NAME', 'class $NAME'],
+  kt: ['fun $NAME($ARGS): $RET { $BODY }'],
+  swift: ['func $NAME($ARGS) -> $RET { $BODY }'],
+};
+
+function normalizeLanguageKey(language?: string): string | undefined {
+  const raw = (language || '').trim().toLowerCase();
+  if (!raw) return undefined;
+  if (raw === 'typescript') return 'ts';
+  if (raw === 'javascript') return 'js';
+  if (raw === 'python') return 'py';
+  if (raw === 'rust') return 'rs';
+  return raw;
+}
+
+function getAstGrepPatternExamples(language?: string): string[] {
+  const langKey = normalizeLanguageKey(language);
+  const langExamples = langKey ? AST_GREP_LANGUAGE_EXAMPLES[langKey] || [] : [];
+  return [...AST_GREP_GENERAL_EXAMPLES, ...langExamples].slice(0, 8);
+}
+
+function buildPatternValidationMessage(
+  pattern: string,
+  validation: PatternValidationResult,
+  language?: string
+): string {
+  const suggestions = validation.suggestions || [];
+  const examples = getAstGrepPatternExamples(language);
+  const lines: string[] = [
+    validation.error || 'Invalid AST pattern.',
+    `Pattern: ${pattern}`,
+    '',
+    'Suggestions:',
+    ...(suggestions.length > 0
+      ? suggestions.map(s => `- ${s}`)
+      : ['- Use a complete code-shaped AST pattern, not regex syntax.']),
+    '',
+    'Working examples:',
+    ...examples.map(e => `- ${e}`),
+    '',
+    'Tip: Add --file-pattern "src/**/*.ts" while iterating to validate patterns quickly.',
+  ];
+
+  if (validation.warning) {
+    lines.splice(2, 0, `Warning: ${validation.warning}`);
+  }
+
+  return lines.join('\n');
+}
+
+function maybeEnhanceAstGrepErrorMessage(
+  errorMessage: string,
+  pattern?: string,
+  language?: string
+): string {
+  const parseLikeFailure =
+    /syntaxerror|parse|unexpected|invalid pattern|cannot parse|sg: parse/i.test(errorMessage) &&
+    /ast-grep|pattern|rule|code/i.test(errorMessage);
+
+  if (!parseLikeFailure) {
+    return errorMessage;
+  }
+
+  const examples = getAstGrepPatternExamples(language);
+  const lines = [
+    errorMessage,
+    '',
+    'Pattern parse guidance:',
+    '- AST patterns are code snippets, not regex.',
+    '- Avoid /regex/, | alternation, and .* wildcards.',
+    '- Prefer complete forms like function/class/import statements.',
+    '',
+    'Try one of these patterns:',
+    ...examples.map(e => `- ${e}`),
+  ];
+
+  if (typeof pattern === 'string' && pattern.trim().length > 0) {
+    lines.splice(2, 0, `Pattern: ${pattern}`);
+  }
+
+  return lines.join('\n');
 }
 
 export function validateAstGrepPattern(pattern: string): PatternValidationResult {
@@ -440,7 +546,7 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
       // Early validation: comprehensive pattern validation
       if (typeof args.pattern !== 'string' || !args.pattern.trim()) {
         throw new Error(
-          'Pattern must be a non-empty string containing an AST pattern (not regex).'
+          'Pattern is required and must be an AST snippet. Example: function $NAME($ARGS) { $BODY }'
         );
       }
 
@@ -448,14 +554,7 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
       const validation = validateAstGrepPattern(pattern);
 
       if (!validation.isValid) {
-        const errorMessage = validation.error || 'Invalid AST pattern';
-        const suggestions = validation.suggestions || [];
-        const fullMessage =
-          errorMessage +
-          (suggestions.length > 0
-            ? '\n\nSuggestions:\n' + suggestions.map(s => '• ' + s).join('\n')
-            : '');
-        throw new Error(fullMessage);
+        throw new Error(buildPatternValidationMessage(pattern, validation, languageToUse));
       }
 
       // Log warnings for potentially problematic patterns
@@ -529,10 +628,45 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
     };
   } catch (error) {
     const executionTime = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const rawErrorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = maybeEnhanceAstGrepErrorMessage(
+      rawErrorMessage,
+      typeof args?.pattern === 'string' ? String(args.pattern) : undefined,
+      typeof args?.language === 'string' ? String(args.language) : undefined
+    );
+
+    const canFallback =
+      typeof args?.pattern === 'string' &&
+      args.pattern.trim().length > 0 &&
+      /spawn|ast-grep|EPERM/i.test(rawErrorMessage);
+
+    if (canFallback) {
+      try {
+        const fallback = await executeRipgrepFallback({
+          pattern: String(args.pattern),
+          projectPath: String(args.projectPath || process.cwd()),
+          maxMatches: Number(args.maxMatches || 100),
+          language: args.language,
+        });
+        return {
+          ...fallback,
+          executionTime,
+          pattern: String(args.pattern),
+          language: args.language,
+          engineUsed: 'text-fallback',
+          degraded: true,
+          fallbackReason: rawErrorMessage,
+        };
+      } catch (fallbackError) {
+        logger.warn('Text fallback after ast-grep failure also failed', {
+          error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        });
+      }
+    }
 
     logger.error('❌ ast-grep search failed', {
-      error: errorMessage,
+      error: rawErrorMessage,
+      enhancedError: errorMessage !== rawErrorMessage ? errorMessage : undefined,
       pattern: args.pattern,
       executionTime,
     });
@@ -543,9 +677,182 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
       executionTime,
       pattern: args?.pattern,
       language: args.language,
+      engineUsed: 'ast-grep',
+      degraded: false,
       error: errorMessage,
     };
   }
+}
+
+async function executeRipgrepFallback(options: {
+  pattern: string;
+  projectPath: string;
+  maxMatches: number;
+  language?: string;
+}): Promise<AstGrepResult> {
+  const literal = extractFallbackLiteral(options.pattern);
+  if (!literal) {
+    throw new Error('Unable to derive fallback literal from AST pattern');
+  }
+
+  const glob = languageToGlob(options.language);
+  const args = ['--line-number', '--column', '--no-heading', '--smart-case', '--max-count', String(options.maxMatches)];
+  if (glob) {
+    args.push('--glob', glob);
+  }
+  args.push(literal, options.projectPath);
+
+  let result: { stdout: string; stderr: string; code: number | null };
+  try {
+    result = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
+      (resolve, reject) => {
+        const child = spawn('rg', args, {
+          cwd: options.projectPath,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: false,
+        });
+
+        let stdout = '';
+        let stderr = '';
+        child.stdout?.on('data', d => (stdout += d.toString()));
+        child.stderr?.on('data', d => (stderr += d.toString()));
+        child.on('error', reject);
+        child.on('close', code => resolve({ stdout, stderr, code }));
+      }
+    );
+  } catch {
+    return executeInProcessTextFallback(options, literal);
+  }
+
+  // rg returns code 1 when no matches; that's not an error for search.
+  if (result.code !== 0 && result.code !== 1) {
+    return executeInProcessTextFallback(options, literal);
+  }
+
+  const lines = result.stdout.split(/\r?\n/).filter(Boolean);
+  const matches: AstGrepMatch[] = lines.slice(0, options.maxMatches).map(line => {
+    const m = line.match(/^(.*?):(\d+):(\d+):(.*)$/);
+    const file = m?.[1] || 'unknown';
+    const lineNo = Number(m?.[2] || 1);
+    const colNo = Number(m?.[3] || 1);
+    const text = m?.[4] || line;
+    return {
+      file,
+      range: {
+        start: { line: lineNo, column: Math.max(0, colNo - 1) },
+        end: { line: lineNo, column: Math.max(0, colNo - 1 + text.length) },
+      },
+      text,
+    };
+  });
+
+  return {
+    matches,
+    totalMatches: matches.length,
+    executionTime: 0,
+    pattern: options.pattern,
+    language: options.language,
+    engineUsed: 'text-fallback',
+    degraded: true,
+  };
+}
+
+async function executeInProcessTextFallback(
+  options: { pattern: string; projectPath: string; maxMatches: number; language?: string },
+  literal: string
+): Promise<AstGrepResult> {
+  const files = await fs.readdir(options.projectPath, { recursive: true } as any).catch(() => []);
+  const exts = languageToExtensions(options.language);
+  const matches: AstGrepMatch[] = [];
+
+  for (const rel of files as string[]) {
+    if (matches.length >= options.maxMatches) break;
+    const full = path.join(options.projectPath, rel);
+    if (/[\\/]node_modules[\\/]|[\\/]dist[\\/]|[\\/]build[\\/]|[\\/]coverage[\\/]|[\\/]\\.git[\\/]/i.test(full)) {
+      continue;
+    }
+    if (exts && !exts.some(ext => full.toLowerCase().endsWith(ext))) continue;
+
+    let content = '';
+    try {
+      const stat = await fs.stat(full);
+      if (!stat.isFile() || stat.size > 512_000) continue;
+      content = await fs.readFile(full, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length && matches.length < options.maxMatches; i++) {
+      const idx = lines[i].toLowerCase().indexOf(literal.toLowerCase());
+      if (idx !== -1) {
+        matches.push({
+          file: full,
+          range: {
+            start: { line: i + 1, column: idx },
+            end: { line: i + 1, column: idx + literal.length },
+          },
+          text: lines[i],
+        });
+      }
+    }
+  }
+
+  return {
+    matches,
+    totalMatches: matches.length,
+    executionTime: 0,
+    pattern: options.pattern,
+    language: options.language,
+    engineUsed: 'text-fallback',
+    degraded: true,
+  };
+}
+
+function extractFallbackLiteral(pattern: string): string | undefined {
+  const cleaned = pattern
+    .replace(/\$+[A-Z_]+/g, ' ')
+    .replace(/[^a-zA-Z0-9_./-]+/g, ' ')
+    .trim();
+  if (!cleaned) return undefined;
+  const allTokens = cleaned.split(/\s+/).filter(t => t.length >= 2);
+  const tokens = allTokens.filter(
+    t =>
+      t.length >= 3 &&
+      !/^(function|class|const|let|var|import|export|async|await|new|return)$/i.test(t)
+  );
+  if (tokens.length === 0) {
+    if (allTokens.length === 0) return undefined;
+    return allTokens.sort((a, b) => b.length - a.length)[0];
+  }
+  return tokens.sort((a, b) => b.length - a.length)[0];
+}
+
+function languageToGlob(language?: string): string | undefined {
+  const lang = (language || '').toLowerCase();
+  if (lang === 'ts' || lang === 'typescript' || lang === 'tsx') return '*.{ts,tsx}';
+  if (lang === 'js' || lang === 'javascript' || lang === 'jsx') return '*.{js,jsx,mjs,cjs}';
+  if (lang === 'py' || lang === 'python') return '*.py';
+  if (lang === 'go') return '*.go';
+  if (lang === 'rs' || lang === 'rust') return '*.rs';
+  if (lang === 'java') return '*.java';
+  if (lang === 'c') return '*.c';
+  if (lang === 'cpp') return '*.cpp';
+  return undefined;
+}
+
+function languageToExtensions(language?: string): string[] | undefined {
+  const lang = (language || '').toLowerCase();
+  if (lang === 'ts' || lang === 'typescript' || lang === 'tsx') return ['.ts', '.tsx'];
+  if (lang === 'js' || lang === 'javascript' || lang === 'jsx')
+    return ['.js', '.jsx', '.mjs', '.cjs'];
+  if (lang === 'py' || lang === 'python') return ['.py'];
+  if (lang === 'go') return ['.go'];
+  if (lang === 'rs' || lang === 'rust') return ['.rs'];
+  if (lang === 'java') return ['.java'];
+  if (lang === 'c') return ['.c', '.h'];
+  if (lang === 'cpp') return ['.cpp', '.cc', '.cxx', '.hpp', '.hh'];
+  return undefined;
 }
 
 /**
@@ -573,6 +880,17 @@ export async function executeAstGrep(options: {
         logger.debug('Using ast-grep rule file', { ruleFilePath: options.ruleFilePath });
         cliArgs.push('--rule', options.ruleFilePath);
       } else {
+        const preflightValidation = validateAstGrepPattern(options.pattern || '');
+        if (!preflightValidation.isValid) {
+          throw new Error(
+            buildPatternValidationMessage(
+              options.pattern || '',
+              preflightValidation,
+              options.language
+            )
+          );
+        }
+
         logger.debug('Adding pattern to args', {
           pattern: options.pattern,
           patternType: typeof options.pattern,
@@ -691,7 +1009,13 @@ export async function executeAstGrep(options: {
           {
             name: 'powershell-npx',
             command: 'powershell',
-            args: ['-Command', 'npx ast-grep ' + cliArgs.join(' ')],
+            args: [
+              '-Command',
+              'npx ast-grep ' +
+              cliArgs
+                .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
+                .join(' '),
+            ],
             options: { shell: false },
           },
           {
@@ -804,12 +1128,14 @@ export async function executeAstGrep(options: {
             executionTime: Date.now() - startTime,
             pattern: options.pattern || (options.ruleFilePath ? '(rule)' : ''),
             language: options.language,
+            engineUsed: 'ast-grep',
+            degraded: false,
           });
         } catch (parseError) {
           reject(
             new Error(
               'Failed to parse ast-grep output: ' +
-                (parseError instanceof Error ? parseError.message : String(parseError))
+              (parseError instanceof Error ? parseError.message : String(parseError))
             )
           );
         }
@@ -872,12 +1198,12 @@ export async function executeAstGrep(options: {
         reject(
           new Error(
             'Failed to spawn ast-grep (' +
-              executionMethod +
-              '): ' +
-              processError.message +
-              ' (code: ' +
-              (processError as any).code +
-              '). Make sure @ast-grep/cli is installed and accessible.'
+            executionMethod +
+            '): ' +
+            processError.message +
+            ' (code: ' +
+            (processError as any).code +
+            '). Make sure @ast-grep/cli is installed and accessible.'
           )
         );
       });
@@ -926,6 +1252,7 @@ function parseAstGrepOutput(
       .split('\n')
       .filter(line => line.trim());
     const allMatches: AstGrepMatch[] = [];
+    let totalParsedMatches = 0;
 
     for (const line of lines) {
       try {
@@ -948,11 +1275,9 @@ function parseAstGrepOutput(
           variables: match.variables || match.env || {},
         };
 
-        allMatches.push(astGrepMatch);
-
-        // Stop if we've reached the max matches
-        if (allMatches.length >= maxMatches) {
-          break;
+        totalParsedMatches += 1;
+        if (allMatches.length < maxMatches) {
+          allMatches.push(astGrepMatch);
         }
       } catch (parseError) {
         logger.debug('Failed to parse ast-grep match line', { line, error: parseError });
@@ -962,7 +1287,7 @@ function parseAstGrepOutput(
 
     return {
       matches: allMatches,
-      totalMatches: lines.length, // Total available matches
+      totalMatches: totalParsedMatches,
     };
   } catch (error) {
     logger.warn('Failed to parse ast-grep output', { error, output: output.substring(0, 200) });
@@ -1240,7 +1565,7 @@ function loadSchemaForLanguage(language?: string): any | null {
     else if (lang === 'py' || lang === 'python') file = 'python_rule.json';
     const full = p.join(base, file);
     if (!fsNative.existsSync(full)) return null;
-    return JSON.parse(fs.readFile(full, 'utf-8') as unknown as string);
+    return JSON.parse(fsNative.readFileSync(full, 'utf-8'));
   } catch {
     return null;
   }

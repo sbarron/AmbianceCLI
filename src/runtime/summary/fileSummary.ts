@@ -325,9 +325,22 @@ export function getLanguageFromPath(filePath: string): { lang: string; grep?: st
     '.swift': { lang: 'swift', grep: 'swift' },
     '.php': { lang: 'php', grep: 'php' },
     '.rb': { lang: 'ruby', grep: 'rb' },
+    '.html': { lang: 'html', grep: 'html' },
+    '.htm': { lang: 'html', grep: 'html' },
+    '.astro': { lang: 'html', grep: 'html' },
+    '.vue': { lang: 'html', grep: 'html' },
+    '.svelte': { lang: 'html', grep: 'html' },
+    '.css': { lang: 'css', grep: 'css' },
+    '.scss': { lang: 'css', grep: 'css' },
+    '.sass': { lang: 'css', grep: 'css' },
+    '.less': { lang: 'css', grep: 'css' },
     // ... existing others without grep ...
     '.json': { lang: 'json' },
     '.md': { lang: 'markdown' },
+    '.mdx': { lang: 'markdown' },
+    '.yaml': { lang: 'yaml' },
+    '.yml': { lang: 'yaml' },
+    '.xml': { lang: 'xml' },
     // ...
   };
   const result = languageMap[ext] || { lang: 'unknown' };

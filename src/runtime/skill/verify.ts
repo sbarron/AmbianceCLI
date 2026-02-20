@@ -90,6 +90,41 @@ function tryReadJsonFile(filePath: string): unknown {
   return JSON.parse(raw);
 }
 
+function validateSkillFrontmatter(skillMdPath: string, errors: string[]): void {
+  if (!fs.existsSync(skillMdPath)) {
+    errors.push('skills/ambiance/SKILL.md not found');
+    return;
+  }
+
+  let raw = '';
+  try {
+    raw = fs.readFileSync(skillMdPath, 'utf8');
+  } catch (error) {
+    errors.push(
+      `Failed to read skills/ambiance/SKILL.md: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return;
+  }
+
+  const match = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) {
+    errors.push('skills/ambiance/SKILL.md is missing YAML frontmatter');
+    return;
+  }
+
+  const frontmatter = match[1];
+  const nameMatch = frontmatter.match(/^\s*name:\s*(.+)\s*$/m);
+  const descriptionMatch = frontmatter.match(/^\s*description:\s*(.+)\s*$/m);
+
+  if (!nameMatch || nameMatch[1].trim().length === 0) {
+    errors.push('skills/ambiance/SKILL.md frontmatter missing non-empty "name"');
+  }
+
+  if (!descriptionMatch || descriptionMatch[1].trim().length === 0) {
+    errors.push('skills/ambiance/SKILL.md frontmatter missing non-empty "description"');
+  }
+}
+
 function findSkillsBaseDir(): string | undefined {
   const envOverride = process.env.AMBIANCE_SKILLS_DIR?.trim();
   if (envOverride) {
@@ -141,6 +176,15 @@ export async function runSkillVerify(args: {
   if (!baseDir) {
     errors.push('skills/ambiance directory not found');
   } else {
+    validateSkillFrontmatter(path.join(baseDir, 'SKILL.md'), errors);
+
+    const agentsYamlPath = path.join(baseDir, 'agents', 'openai.yaml');
+    if (!fs.existsSync(agentsYamlPath)) {
+      warnings.push(
+        'skills/ambiance/agents/openai.yaml not found (recommended for skill discovery UIs)'
+      );
+    }
+
     const capabilitiesPath = path.join(baseDir, 'capabilities.json');
     if (!fs.existsSync(capabilitiesPath)) {
       errors.push('skills/ambiance/capabilities.json not found');

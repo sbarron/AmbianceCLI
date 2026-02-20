@@ -11,6 +11,7 @@ import type { ProviderType } from './core/openaiService';
 import type { ModelTargetSpec } from './tools/aiTools/multiModelCompare';
 import type { ManageEmbeddingsAction } from './tools/localTools/embeddingManagement';
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 function loadPackageJson(): any {
@@ -46,7 +47,9 @@ function detectProjectPath(): string {
   const { detectWorkspaceDirectory } = require('./tools/utils/pathUtils');
   const detected = detectWorkspaceDirectory();
   if (detected && detected !== process.cwd()) {
-    console.error(`Auto-detected project directory: ${detected}`);
+    if (process.env.AMBIANCE_QUIET !== 'true') {
+      console.error(`Auto-detected project directory: ${detected}`);
+    }
     return detected;
   }
 
@@ -99,10 +102,12 @@ type OptionValue = string | number | boolean | string[] | undefined;
 interface GlobalOptions {
   projectPath?: string;
   format?: string;
+  json?: boolean;
   output?: string;
   excludePatterns?: string[];
   help?: boolean;
   verbose?: boolean;
+  quiet?: boolean;
   expanded?: boolean;
   [key: string]: OptionValue;
 }
@@ -177,12 +182,22 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
   },
   {
     title: 'Embeddings & Storage',
-    summary: 'Local embedding engine with automatic generation on first tool use.',
+    summary: 'Local embedding engine with automatic generation and staleness checking.',
     vars: [
       {
         name: 'USE_LOCAL_EMBEDDINGS',
         defaultValue: 'true',
         description: 'Enables local embeddings (auto-generated on first tool use).',
+      },
+      {
+        name: 'EMBEDDING_AUTO_SYNC',
+        defaultValue: 'true (when USE_LOCAL_EMBEDDINGS=true)',
+        description: 'Automatically check and update stale embeddings on context calls.',
+      },
+      {
+        name: 'EMBEDDING_AUTO_SYNC_THRESHOLD_MS',
+        defaultValue: '600000 (10 minutes)',
+        description: 'Time threshold (ms) before embeddings are considered stale.',
       },
       {
         name: 'USE_LOCAL_STORAGE',
@@ -394,6 +409,7 @@ const commands = [
   'context',
   'hints',
   'summary',
+  'manifest',
   'frontend',
   'debug',
   'grep',
@@ -438,7 +454,7 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
       } else if (arg === '--format' && i + 1 < args.length) {
         options.format = args[++i];
       } else if (arg === '--json') {
-        options.format = 'json';
+        options.json = true;
       } else if (arg === '--output' && i + 1 < args.length) {
         options.output = args[++i];
       } else if (arg === '--embeddings') {
@@ -450,8 +466,15 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
           .split(',')
           .map(s => s.trim())
           .filter(s => s.length > 0);
+      } else if (arg === '--exclude' && i + 1 < args.length) {
+        options.excludePatterns = args[++i]
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
       } else if (arg === '--help' || arg === '-h') {
         options.help = true;
+      } else if (arg === '--quiet') {
+        options.quiet = true;
       } else if (arg === '--verbose' || arg === '-v') {
         options.verbose = true;
       } else {
@@ -468,9 +491,26 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
 
 const { options: globalOptions, remaining } = parseGlobalOptions(args);
 
-// Strict JSON mode: keep stdout clean.
-if (globalOptions.format === 'json') {
-  process.env.LOG_LEVEL = 'error';
+function isJsonMode(options: GlobalOptions): boolean {
+  return options.json === true || (typeof options.format === 'string' && options.format.toLowerCase() === 'json');
+}
+
+function resolveToolFormat(options: GlobalOptions, fallback: string): string {
+  if (typeof options.format !== 'string') {
+    return fallback;
+  }
+
+  if (options.format.toLowerCase() === 'json') {
+    return fallback;
+  }
+
+  return options.format;
+}
+
+// Strict JSON/quiet mode: keep stdout/stderr clean for machine parsing.
+if (isJsonMode(globalOptions) || globalOptions.quiet) {
+  process.env.LOG_LEVEL = 'silent';
+  process.env.AMBIANCE_QUIET = 'true';
 }
 
 if (typeof globalOptions.useEmbeddings === 'boolean') {
@@ -485,7 +525,7 @@ function exitWithError(args: {
 }): never {
   const { command, message, options, exitCode } = args;
 
-  if (options.format === 'json') {
+  if (isJsonMode(options)) {
     console.log(
       JSON.stringify(
         {
@@ -523,11 +563,13 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('  --expanded, -E         Include environment variable defaults in help output');
   console.log('  --env-help             Shortcut for --help --expanded');
   console.log('  --version, -V          Show version information');
+  console.log('  --quiet                Suppress non-essential stderr logging');
   console.log('');
   console.log('Commands:');
   console.log('  context                Semantic code compaction and context generation');
   console.log('  hints                  Project structure analysis and navigation hints');
   console.log('  summary                Individual file analysis and symbol extraction');
+  console.log('  manifest               Project-wide function/method listing for navigation');
   console.log('  frontend               Frontend code pattern analysis');
   console.log('  debug                  Debug context analysis from error logs');
   console.log('  grep                   AST-based structural code search');
@@ -537,17 +579,22 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   );
   console.log('  embeddings             Embedding management and workspace configuration');
   console.log('  doctor                 Environment/readiness diagnostics');
-  console.log('  skill                  Agent skill helpers (verify)');
+  console.log('  skill                  Agent skill helpers (verify/list/workflow/recipe)');
   console.log('  migrate                Migration helpers (MCP -> CLI)');
   console.log('');
   console.log('Global Options:');
   console.log('  --project-path <path>  Project directory path');
-  console.log('  --format <format>      Output format (json, structured, compact)');
-  console.log('  --json                 Shortcut for --format json');
+  console.log(
+    '  --format <format>      Command format where supported (e.g. enhanced, structured, compact)'
+  );
+  console.log('  --json                 Output machine-readable JSON envelope');
   console.log('  --output <file>        Write output to file');
+  console.log('  --exclude-patterns <a,b,c>  Additional glob exclusions for supporting commands');
+  console.log('  --exclude <a,b,c>      Alias for --exclude-patterns');
   console.log('  --embeddings           Force USE_LOCAL_EMBEDDINGS=true for this run');
   console.log('  --no-embeddings        Force USE_LOCAL_EMBEDDINGS=false for this run');
   console.log('  --verbose, -v          Enable verbose output');
+  console.log('  --quiet                Suppress non-essential stderr logging');
   console.log('');
   console.log('Examples:');
   console.log('  ambiance context --query "How does authentication work?" --max-tokens 2000');
@@ -599,6 +646,294 @@ function showEnvironmentHelp(): void {
 function showVersion(): void {
   console.log(`Ambiance CLI v${packageJson.version}`);
 }
+
+function showCommandHelp(command: string): void {
+  const common = [
+    'Common flags:',
+    '  --json                 Output machine-readable JSON envelope',
+    '  --project-path <path>  Explicit project path (recommended)',
+    '  --format <format>      Command format where supported',
+    '  --exclude-patterns <a,b,c>  Additional path exclusions',
+    '  --exclude <a,b,c>      Alias for --exclude-patterns',
+  ];
+
+  const blocks: Record<string, string[]> = {
+    context: [
+      'ambiance context',
+      '---------------',
+      'Generate semantic project context for a query.',
+      '',
+      'Usage:',
+      '  ambiance context "<query>" [--json] [--project-path <path>] [--max-tokens <n>] [--task-type <type>] [--auto-sync]',
+      '',
+      ...common,
+      '  --max-tokens <n>       Token budget for context assembly',
+      '  --task-type <type>     Context focus (implement | review | understand)',
+      '  --max-similar-chunks <n>',
+      '  --auto-sync            Check/update stale embeddings before generating context',
+      '  --auto-sync-batch-size <n>',
+      '  --exclude-patterns a,b,c',
+      '',
+      'Examples:',
+      '  ambiance context "authentication flow" --json --project-path ./ --max-tokens 2400',
+      '  ambiance context "auth middleware" --json --project-path ./ --auto-sync',
+      '  ambiance context --query "request lifecycle" --json --task-type review',
+    ],
+    hints: [
+      'ambiance hints',
+      '-------------',
+      'Analyze project structure and return navigation hints.',
+      '',
+      'Usage:',
+      '  ambiance hints [--json] [--project-path <path>] [--max-files <n>] [--folder-path <path>]',
+      '',
+      ...common,
+      '  --max-files <n>        Maximum files to inspect',
+      '  --folder-path <path>   Restrict analysis to a folder',
+      '  --include-content <bool>',
+      '  --use-ai <bool>',
+    ],
+    summary: [
+      'ambiance summary',
+      '---------------',
+      'Summarize one file with AST-aware symbol extraction.',
+      '',
+      'Usage:',
+      '  ambiance summary <filePath> [--json] [--include-symbols <bool>] [--max-symbols <n>]',
+      '',
+      ...common,
+      '  --include-symbols <bool>',
+      '  --max-symbols <n>',
+    ],
+    manifest: [
+      'ambiance manifest',
+      '----------------',
+      'Generate project-wide function/method listing for navigation and orientation.',
+      '',
+      'Usage:',
+      '  ambiance manifest [--json] [--project-path <path>] [options]',
+      '',
+      ...common,
+      '  --file-pattern <glob>      Filter files by glob pattern',
+      '  --exports-only             Show only exported symbols',
+      '  --include-types            Include type definitions (default: true)',
+      '  --include-classes          Include class definitions (default: true)',
+      '  --include-interfaces       Include interface definitions (default: true)',
+      '  --max-files <n>            Maximum files to process (default: 200)',
+      '  --group-by-folder          Group files by folder',
+      '  --sort-by <field>          Sort symbols (name|line|kind|file)',
+      '  --include-lines            Show line numbers',
+      '',
+      'Format options:',
+      '  compact (default)          File with indented function list',
+      '  tree                       Grouped by symbol kind',
+      '  flat                       One line per symbol (grep-friendly)',
+      '  json                       Machine-readable JSON',
+      '',
+      'Examples:',
+      '  ambiance manifest --json --project-path ./',
+      '  ambiance manifest --exports-only --format flat',
+      '  ambiance manifest --file-pattern "src/**/*.ts" --include-lines',
+    ],
+    debug: [
+      'ambiance debug',
+      '-------------',
+      'Parse error logs and surface likely files/symbol matches.',
+      '',
+      'Usage:',
+      '  ambiance debug "<logText>" [--json] [--project-path <path>] [--max-matches <n>]',
+      '',
+      ...common,
+      '  --max-matches <n>',
+    ],
+    grep: [
+      'ambiance grep',
+      '------------',
+      'AST structural code search.',
+      '',
+      'Usage:',
+      '  ambiance grep "<pattern>" [--json] [--project-path <path>] [--language <lang>]',
+      '  ambiance grep --rule-path <file> [--json] [--project-path <path>] [--language <lang>]',
+      '',
+      ...common,
+      '  --language <lang>      typescript | javascript | python | ...',
+      '  --file-pattern <glob>  Narrow search scope (recommended while iterating patterns)',
+      '  --max-matches <n>      Limit returned matches (default: 100)',
+      '  --rule-path <file>     Use an ast-grep rule file instead of --pattern',
+      '  --rule-yaml <yaml>     Inline ast-grep rule (YAML/JSON text)',
+      '  --rule-json <json>     Inline ast-grep rule object as JSON string',
+      '  --include-context <bool>',
+      '  --context-lines <n>',
+      '  --output-mode <mode>',
+      '',
+      'Pattern examples:',
+      '  function $NAME($ARGS) { $BODY }',
+      '  import $NAME from "$MODULE"',
+      '  const $NAME = ($ARGS) => $BODY',
+      '  def ',
+      '  class $NAME:',
+      '',
+      'Common pattern mistakes:',
+      '  Do not use regex: /foo.*/, a|b, .*',
+      '  Do not use overly-ambiguous fragments: function $FUNC',
+      '',
+      'PowerShell tip:',
+      "  Use single quotes to prevent $ expansion, e.g. 'function $NAME($ARGS) { $BODY }'",
+    ],
+    frontend: [
+      'ambiance frontend',
+      '----------------',
+      'Analyze frontend routes, components, and design/system risks.',
+      '',
+      'Usage:',
+      '  ambiance frontend [--json] [--project-path <path>] [--subtree <path>] [--max-files <n>]',
+      '',
+      ...common,
+      '  --subtree <path>',
+      '  --max-files <n>',
+      '  --include-content <bool>',
+    ],
+    compare: [
+      'ambiance compare',
+      '---------------',
+      'Run a prompt across multiple models/providers and compare responses.',
+      '',
+      'Usage:',
+      '  ambiance compare --prompt "<text>" [--json] [--models "<provider:model,...>"]',
+      '',
+      ...common,
+      '  --prompt <text>         Required',
+      '  --models <specs>        e.g. "openai:gpt-5,openai:gpt-4o"',
+      '  --system <text>',
+      '  --temperature <n>',
+      '  --max-tokens <n>',
+    ],
+    embeddings: [
+      'ambiance embeddings',
+      '------------------',
+      'Workspace and embeddings lifecycle management.',
+      '',
+      'Usage:',
+      '  ambiance embeddings <action> [--json] [--project-path <path>]',
+      '',
+      'Actions:',
+      '  status | create | update | validate | check_stale | set_workspace | list_projects | ...',
+      '',
+      ...common,
+      '  --force true            Required for non-interactive embeddings create in JSON mode',
+      '',
+      'Examples:',
+      '  ambiance embeddings status --json --project-path ./',
+      '  ambiance embeddings create --json --project-path ./ --force true',
+    ],
+    packs: [
+      'ambiance packs',
+      '-------------',
+      'Manage reusable context packs.',
+      '',
+      'Usage:',
+      '  ambiance packs <create|list|get|delete|template|ui> [--json]',
+      '',
+      ...common,
+      '  create flags: --name <name> --query <query> [--task-type <type>]',
+      '  get/delete: pass ID as positional arg or --id <id>',
+    ],
+    doctor: [
+      'ambiance doctor',
+      '--------------',
+      'Check runtime/dependency readiness.',
+      '',
+      'Usage:',
+      '  ambiance doctor [--json]',
+    ],
+    skill: [
+      'ambiance skill',
+      '-------------',
+      'Skill metadata and workflow/recipe introspection.',
+      '',
+      'Usage:',
+      '  ambiance skill verify [--json]',
+      '  ambiance skill list [--json]',
+      '  ambiance skill workflow <name> [--json]',
+      '  ambiance skill recipe <name> [--json]',
+      '',
+      'Examples:',
+      '  ambiance skill workflow understand --json',
+      '  ambiance skill recipe context --json',
+    ],
+    migrate: [
+      'ambiance migrate',
+      '---------------',
+      'MCP-to-CLI migration helpers.',
+      '',
+      'Usage:',
+      '  ambiance migrate mcp-map [--json]',
+    ],
+  };
+
+  const lines = blocks[command];
+  if (!lines) {
+    showHelp();
+    return;
+  }
+
+  console.log(lines.join('\n'));
+
+  const recipeBackedCommands = new Set([
+    'context',
+    'debug',
+    'doctor',
+    'embeddings',
+    'frontend',
+    'grep',
+    'hints',
+    'packs',
+    'summary',
+  ]);
+
+  if (recipeBackedCommands.has(command)) {
+    console.log('');
+    const recipeName = command === 'embeddings' ? 'embeddings-status' : command;
+    console.log(`Recipe details: ambiance skill recipe ${recipeName} --json`);
+  }
+
+  if (command === 'context' || command === 'debug' || command === 'hints') {
+    console.log(
+      'Workflow details: ambiance skill workflow <understand|debug|implement|review> --json'
+    );
+  }
+}
+
+function findSkillBaseDirForCli(): string | undefined {
+  const envOverride = process.env.AMBIANCE_SKILLS_DIR?.trim();
+  if (envOverride) {
+    try {
+      if (fs.existsSync(envOverride) && fs.statSync(envOverride).isDirectory()) {
+        return envOverride;
+      }
+    } catch {
+      // ignore and continue
+    }
+  }
+
+  const candidates = [
+    path.resolve(__dirname, '..', '..', 'skills', 'ambiance'),
+    path.resolve(__dirname, '..', 'skills', 'ambiance'),
+    path.resolve(process.cwd(), 'skills', 'ambiance'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // ignore and continue
+    }
+  }
+
+  return undefined;
+}
 // Tool execution functions
 async function executeToolCommand(
   command: string,
@@ -617,6 +952,8 @@ async function executeToolCommand(
           'taskType',
           'maxTokens',
           'maxSimilarChunks',
+          'autoSync',
+          'autoSyncBatchSize',
           'excludePatterns',
         ];
         const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
@@ -630,7 +967,7 @@ async function executeToolCommand(
         result = await handleSemanticCompact({
           query,
           projectPath: globalOptions.projectPath || detectProjectPath(),
-          format: globalOptions.format || 'structured',
+          format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
         break;
@@ -649,7 +986,7 @@ async function executeToolCommand(
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleProjectHints({
           projectPath: globalOptions.projectPath || detectProjectPath(),
-          format: globalOptions.format || 'compact',
+          format: resolveToolFormat(globalOptions, 'compact'),
           ...parsedArgs,
         });
         break;
@@ -673,7 +1010,32 @@ async function executeToolCommand(
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleFileSummary({
           filePath,
-          format: globalOptions.format || 'structured',
+          format: resolveToolFormat(globalOptions, 'structured'),
+          ...parsedArgs,
+        });
+        break;
+      }
+
+      case 'manifest': {
+        const { handleProjectManifest } = await import('./runtime/manifest/projectManifest');
+
+        const allowedKeys = [
+          'filePattern',
+          'exportsOnly',
+          'includeTypes',
+          'includeClasses',
+          'includeInterfaces',
+          'maxFiles',
+          'groupByFolder',
+          'sortBy',
+          'includeLines',
+          'excludePatterns',
+        ];
+        const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
+
+        result = await handleProjectManifest({
+          projectPath: globalOptions.projectPath || detectProjectPath(),
+          format: resolveToolFormat(globalOptions, 'compact') as 'compact' | 'tree' | 'json' | 'flat',
           ...parsedArgs,
         });
         break;
@@ -686,7 +1048,7 @@ async function executeToolCommand(
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleFrontendInsights({
           projectPath: globalOptions.projectPath || detectProjectPath(),
-          format: globalOptions.format || 'structured',
+          format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
         break;
@@ -711,7 +1073,7 @@ async function executeToolCommand(
         result = await handleLocalDebugContext({
           logText,
           projectPath: globalOptions.projectPath || detectProjectPath(),
-          format: globalOptions.format || 'structured',
+          format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
         break;
@@ -720,24 +1082,80 @@ async function executeToolCommand(
       case 'grep': {
         const { handleAstGrep } = await import('./runtime/grep/astGrep');
 
-        const allowedKeys = ['language', 'outputMode'];
-        const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
-        const pattern = positionalArgs[0];
-        if (!pattern) {
+        const allowedKeys = [
+          'pattern',
+          'language',
+          'outputMode',
+          'filePattern',
+          'maxMatches',
+          'rulePath',
+          'ruleYaml',
+          'ruleJson',
+          'includeContext',
+          'contextLines',
+          'respectGitignore',
+          'excludePatterns',
+        ];
+        const unknownFlags = findUnknownToolFlags(toolArgs, allowedKeys);
+        if (unknownFlags.length > 0) {
           exitWithError({
             command: 'grep',
-            message: 'pattern is required for grep command',
+            message:
+              `Unknown grep option(s): ${unknownFlags.join(', ')}. ` +
+              'Run "ambiance grep --help" for supported flags.',
             options: globalOptions,
             exitCode: EXIT_CODES.USAGE_ERROR,
           });
         }
 
+        const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
-        result = await handleAstGrep({
-          pattern,
+
+        if (typeof parsedArgs.ruleJson === 'string') {
+          try {
+            parsedArgs.ruleJson = JSON.parse(parsedArgs.ruleJson);
+          } catch (error) {
+            exitWithError({
+              command: 'grep',
+              message:
+                'Invalid JSON provided to --rule-json. Example: --rule-json "{\\"id\\":\\"x\\",\\"rule\\":{\\"pattern\\":\\"function $NAME($ARGS) { $BODY }\\"}}"',
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+        }
+
+        const hasRuleInput = !!(parsedArgs.rulePath || parsedArgs.ruleYaml || parsedArgs.ruleJson);
+        const pattern =
+          typeof parsedArgs.pattern === 'string' && parsedArgs.pattern.trim().length > 0
+            ? parsedArgs.pattern
+            : positionalArgs[0];
+        if (!pattern && !hasRuleInput) {
+          exitWithError({
+            command: 'grep',
+            message:
+              'pattern is required unless a rule input is provided. Example: ambiance grep "function $NAME($ARGS) { $BODY }" --language ts',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+
+        if (
+          parsedArgs.excludePatterns === undefined &&
+          globalOptions.excludePatterns !== undefined
+        ) {
+          parsedArgs.excludePatterns = globalOptions.excludePatterns;
+        }
+
+        const grepArgs: Record<string, unknown> = {
           projectPath: globalOptions.projectPath || detectProjectPath(),
           ...parsedArgs,
-        });
+        };
+        if (pattern) {
+          grepArgs.pattern = pattern;
+        }
+
+        result = await handleAstGrep(grepArgs);
         break;
       }
 
@@ -826,7 +1244,7 @@ async function executeToolCommand(
           models: modelSpecs,
         });
 
-        if (globalOptions.format === 'json') {
+        if (isJsonMode(globalOptions)) {
           result = comparison;
         } else {
           result = formatComparisonResultMarkdown(comparison);
@@ -844,12 +1262,91 @@ async function executeToolCommand(
       }
 
       case 'skill': {
-        const subcommand = toolArgs.find(arg => !arg.startsWith('--')) || 'verify';
+        const positional = toolArgs.filter(arg => !arg.startsWith('--'));
+        const subcommand = positional[0] || 'verify';
+        const subArg = positional[1];
+
+        if (toolArgs.includes('--help') || toolArgs.includes('-h')) {
+          showCommandHelp('skill');
+          process.exit(EXIT_CODES.OK);
+        }
+
+        if (subcommand === 'list' || subcommand === 'workflow' || subcommand === 'recipe') {
+          const baseDir = findSkillBaseDirForCli();
+          if (!baseDir) {
+            exitWithError({
+              command: 'skill',
+              message: 'skills/ambiance directory not found',
+              options: globalOptions,
+              exitCode: EXIT_CODES.RUNTIME_ERROR,
+            });
+          }
+
+          const workflowsDir = path.join(baseDir, 'workflows');
+          const recipesDir = path.join(baseDir, 'recipes');
+          const workflowFiles =
+            fs.existsSync(workflowsDir) && fs.statSync(workflowsDir).isDirectory()
+              ? fs
+                  .readdirSync(workflowsDir)
+                  .filter(f => f.endsWith('.json'))
+                  .sort()
+              : [];
+          const recipeFiles =
+            fs.existsSync(recipesDir) && fs.statSync(recipesDir).isDirectory()
+              ? fs
+                  .readdirSync(recipesDir)
+                  .filter(f => f.endsWith('.json'))
+                  .sort()
+              : [];
+
+          if (subcommand === 'list') {
+            result = {
+              success: true,
+              timestamp: new Date().toISOString(),
+              baseDir,
+              workflows: workflowFiles.map(f => f.replace(/\.json$/i, '')),
+              recipes: recipeFiles.map(f => f.replace(/\.json$/i, '')),
+            };
+            break;
+          }
+
+          if (!subArg) {
+            exitWithError({
+              command: 'skill',
+              message: `skill ${subcommand} requires a name argument`,
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
+          const fileName = subArg.endsWith('.json') ? subArg : `${subArg}.json`;
+          const targetDir = subcommand === 'workflow' ? workflowsDir : recipesDir;
+          const targetPath = path.join(targetDir, fileName);
+          if (!fs.existsSync(targetPath)) {
+            exitWithError({
+              command: 'skill',
+              message: `${subcommand} "${subArg}" not found`,
+              options: globalOptions,
+              exitCode: EXIT_CODES.USAGE_ERROR,
+            });
+          }
+
+          const parsed = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+          result = {
+            success: true,
+            timestamp: new Date().toISOString(),
+            type: subcommand,
+            name: subArg,
+            path: targetPath,
+            definition: parsed,
+          };
+          break;
+        }
 
         if (subcommand !== 'verify') {
           exitWithError({
             command: 'skill',
-            message: `Unknown skill subcommand: ${subcommand} (supported: verify)`,
+            message: `Unknown skill subcommand: ${subcommand} (supported: verify, list, workflow, recipe)`,
             options: globalOptions,
             exitCode: EXIT_CODES.USAGE_ERROR,
           });
@@ -1039,7 +1536,7 @@ async function executeToolCommand(
         }
 
         if (subcommand === 'ui') {
-          if (globalOptions.format === 'json' || !process.stdout.isTTY) {
+          if (isJsonMode(globalOptions) || !process.stdout.isTTY) {
             exitWithError({
               command: 'packs',
               message:
@@ -1126,7 +1623,7 @@ async function executeToolCommand(
 
         // Special handling for create action - require confirmation
         if (action === 'create' && !skipConfirmation) {
-          if (globalOptions.format === 'json' || !process.stdout.isTTY) {
+          if (isJsonMode(globalOptions) || !process.stdout.isTTY) {
             exitWithError({
               command: 'embeddings',
               message:
@@ -1149,7 +1646,7 @@ async function executeToolCommand(
 
             const files = await globby(
               [
-                '**/*.{ts,tsx,js,jsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh,md}',
+                '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
               ],
               {
                 cwd: projectPath,
@@ -1237,14 +1734,14 @@ async function executeToolCommand(
         if (action === 'check_stale') {
           const projectPath = globalOptions.projectPath || detectProjectPath();
 
-          if (globalOptions.format !== 'json') {
+          if (!isJsonMode(globalOptions)) {
             // Always show which project is being checked
             console.log(`\n🔍 Checking stale files in: ${projectPath}`);
           }
 
           // Require confirmation for autoUpdate
           if (parsedArgs.autoUpdate) {
-            if (globalOptions.format === 'json' || !process.stdout.isTTY) {
+            if (isJsonMode(globalOptions) || !process.stdout.isTTY) {
               exitWithError({
                 command: 'embeddings',
                 message:
@@ -1334,7 +1831,7 @@ async function executeToolCommand(
         });
     }
 
-    if (globalOptions.format === 'json') {
+    if (isJsonMode(globalOptions)) {
       result = normalizeJsonResult(command, result);
 
       if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
@@ -1442,6 +1939,40 @@ function parseSingleModelSpec(rawSpec: string): ModelTargetSpec {
   };
 }
 
+const TOOL_OPTION_ALIASES: Record<string, string> = {
+  exclude: 'excludepatterns',
+};
+
+function normalizeToolOptionKey(rawKey: string): string {
+  const normalized = rawKey.replace(/^-+/, '').replace(/-/g, '').toLowerCase();
+  return TOOL_OPTION_ALIASES[normalized] || normalized;
+}
+
+function findUnknownToolFlags(args: string[], allowedKeys: string[]): string[] {
+  const allowed = new Set(allowedKeys.map(key => normalizeToolOptionKey(key)));
+  const unknown = new Set<string>();
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) continue;
+
+    const keyToken = arg.slice(2);
+    const key = keyToken.includes('=') ? keyToken.split('=')[0] : keyToken;
+    const normalized = normalizeToolOptionKey(key);
+    const hasValue =
+      !keyToken.includes('=') && i + 1 < args.length && !args[i + 1].startsWith('--');
+
+    if (!allowed.has(normalized)) {
+      unknown.add(`--${key}`);
+    }
+    if (hasValue) {
+      i += 1;
+    }
+  }
+
+  return Array.from(unknown);
+}
+
 function parseToolSpecificArgs(args: string[], allowedKeys: string[]): ToolArgMap {
   const parsed: ToolArgMap = {};
   const arrayKeys = new Set(['excludepatterns', 'files']); // Keys parsed as arrays (after normalization)
@@ -1449,9 +1980,10 @@ function parseToolSpecificArgs(args: string[], allowedKeys: string[]): ToolArgMa
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg.startsWith('--')) {
-      const key = arg.replace('--', '').replace(/-/g, '').toLowerCase();
+      const rawKey = arg.replace('--', '');
+      const key = normalizeToolOptionKey(rawKey);
       const matchedKey = allowedKeys.find(
-        allowed => allowed.replace(/-/g, '').toLowerCase() === key
+        allowed => normalizeToolOptionKey(allowed) === key
       );
       if (matchedKey) {
         if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
@@ -1479,14 +2011,14 @@ function parseToolSpecificArgs(args: string[], allowedKeys: string[]): ToolArgMa
 }
 
 function extractPositionalArgs(args: string[], allowedKeys: string[]): string[] {
-  const allowed = new Set(allowedKeys.map(key => key.replace(/-/g, '').toLowerCase()));
+  const allowed = new Set(allowedKeys.map(key => normalizeToolOptionKey(key)));
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
     if (arg.startsWith('--')) {
-      const key = arg.replace('--', '').replace(/-/g, '').toLowerCase();
+      const key = normalizeToolOptionKey(arg.replace('--', ''));
 
       const isRecognized = allowed.has(key);
       const hasValue = i + 1 < args.length && !args[i + 1].startsWith('--');
@@ -1543,7 +2075,7 @@ function normalizeJsonResult(command: string, result: unknown): unknown {
 }
 
 function formatToolOutput(result: unknown, options: GlobalOptions): string {
-  if (options.format === 'json') {
+  if (isJsonMode(options)) {
     return JSON.stringify(result ?? null, null, 2);
   }
 
@@ -1574,7 +2106,10 @@ function formatToolOutput(result: unknown, options: GlobalOptions): string {
 
 // Main CLI logic
 async function main() {
-  if (isHelp) {
+  if (isToolCommand && isHelp) {
+    showCommandHelp(args[0]);
+    process.exit(0);
+  } else if (isHelp) {
     showHelp({ expanded: wantsExpandedHelp });
     process.exit(0);
   } else if (isVersion) {
@@ -1594,7 +2129,7 @@ async function main() {
     await executeToolCommand(command, toolArgs, globalOptions);
   } else {
     // Fallback to help for unrecognized arguments
-    if (globalOptions.format === 'json') {
+    if (isJsonMode(globalOptions)) {
       exitWithError({
         message: 'Unrecognized arguments. Use --help for usage information.',
         options: globalOptions,

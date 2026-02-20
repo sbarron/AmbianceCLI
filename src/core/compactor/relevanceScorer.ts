@@ -40,6 +40,7 @@ export interface RelevanceContext {
 
 export interface ScoredSymbol {
   symbol: HashedSymbol;
+  queryMatchScore: number;
   relevanceScore: number;
   contextScore: number;
   qualityScore: number;
@@ -72,7 +73,8 @@ export class RelevanceScorer {
     scoredSymbols.sort((a, b) => b.totalScore - a.totalScore);
 
     // Filter by token budget if specified
-    const filtered = this.applyTokenBudget(scoredSymbols, context.maxTokens);
+    const tokenBudgetFiltered = this.applyTokenBudget(scoredSymbols, context.maxTokens);
+    const filtered = this.applyQueryFocus(tokenBudgetFiltered, context);
 
     const result = this.buildResult(filtered, files.length);
 
@@ -95,7 +97,13 @@ export class RelevanceScorer {
   ): ScoredSymbol {
     const reasoning: string[] = [];
 
-    const relevanceScore = this.calculateRelevanceScore(symbol, context, reasoning);
+    const queryMatchScore = context.query ? this.calculateQueryMatchScore(symbol, context.query) : 0;
+    const relevanceScore = this.calculateRelevanceScore(
+      symbol,
+      context,
+      reasoning,
+      queryMatchScore
+    );
     const contextScore = this.calculateContextScore(symbol, context, allFiles, reasoning);
     const qualityScore = this.calculateQualityScore(symbol, reasoning);
 
@@ -128,6 +136,7 @@ export class RelevanceScorer {
 
     return {
       symbol,
+      queryMatchScore,
       relevanceScore,
       contextScore,
       qualityScore,
@@ -142,13 +151,17 @@ export class RelevanceScorer {
   private calculateRelevanceScore(
     symbol: HashedSymbol,
     context: RelevanceContext,
-    reasoning: string[]
+    reasoning: string[],
+    precomputedQueryScore?: number
   ): number {
     let score = 0;
 
     // Query matching
     if (context.query) {
-      const queryScore = this.calculateQueryMatchScore(symbol, context.query);
+      const queryScore =
+        typeof precomputedQueryScore === 'number'
+          ? precomputedQueryScore
+          : this.calculateQueryMatchScore(symbol, context.query);
       score += queryScore * 30;
       if (queryScore > 0.3) {
         reasoning.push(`Query match: ${(queryScore * 100).toFixed(0)}%`);
@@ -649,6 +662,32 @@ export class RelevanceScorer {
     }
 
     return filtered;
+  }
+
+  /**
+   * Keep query-driven contexts focused even when token budget is large enough to include everything.
+   */
+  private applyQueryFocus(scoredSymbols: ScoredSymbol[], context: RelevanceContext): ScoredSymbol[] {
+    const query = context.query?.trim();
+    if (!query || scoredSymbols.length === 0) {
+      return scoredSymbols;
+    }
+
+    const maxByRatio = Math.ceil(scoredSymbols.length * 0.45);
+    const maxSymbols = Math.max(6, Math.min(24, maxByRatio));
+
+    const strongMatches = scoredSymbols.filter(symbol => symbol.queryMatchScore >= 0.2);
+    if (strongMatches.length > 0) {
+      return strongMatches.slice(0, maxSymbols);
+    }
+
+    const weakMatches = scoredSymbols.filter(symbol => symbol.queryMatchScore >= 0.08);
+    if (weakMatches.length > 0) {
+      return weakMatches.slice(0, maxSymbols);
+    }
+
+    // No lexical matches: return a smaller high-signal slice instead of full-project output.
+    return scoredSymbols.slice(0, Math.min(maxSymbols, 8));
   }
 
   /**

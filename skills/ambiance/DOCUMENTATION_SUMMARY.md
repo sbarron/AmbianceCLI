@@ -146,7 +146,7 @@ Agents can use the documentation in different ways depending on their needs:
 **Example**:
 - User says "How does auth work?" → `context "authentication" --max-tokens 3000`
 - User says "TypeError at line 42" → `debug "TypeError..." --project-path ./`
-- User says "Find all functions" → `grep "function $NAME($$ARGS)" --language typescript`
+- User says "Find all functions" → `grep "function $NAME($ARGS) { $BODY }" --language typescript`
 
 ### 2. Output Predictability
 
@@ -288,3 +288,4 @@ The Ambiance skill documentation has been transformed from basic CLI examples to
 - **Troubleshooting resources** for debugging
 
 This positions Ambiance as a production-ready tool for agent workflows with minimal integration friction.
+

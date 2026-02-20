@@ -171,7 +171,7 @@ export class HybridIndexer {
       '**/*.{ts,tsx,js,jsx,mjs,cjs}',
       '**/*.{py,go,rs,java}',
       '**/*.{cpp,c,h,hpp,cc,cxx}',
-      '**/*.{md,json,yaml,yml}',
+      '**/*.{md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
       '**/README*',
       '**/package.json',
       '**/Cargo.toml',
@@ -633,9 +633,19 @@ export class HybridIndexer {
       '.h': 'c',
       '.hpp': 'cpp',
       '.md': 'markdown',
+      '.mdx': 'markdown',
       '.json': 'json',
       '.yaml': 'yaml',
       '.yml': 'yaml',
+      '.html': 'html',
+      '.htm': 'html',
+      '.astro': 'html',
+      '.vue': 'html',
+      '.svelte': 'html',
+      '.css': 'css',
+      '.scss': 'css',
+      '.sass': 'css',
+      '.less': 'css',
     };
 
     return languageMap[ext] || null;

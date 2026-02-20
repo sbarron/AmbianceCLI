@@ -1067,7 +1067,7 @@ export class AutomaticIndexer {
     const includePatterns = pattern
       ? [pattern]
       : [
-          '**/*.{js,jsx,ts,tsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh}',
+          '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
         ];
 
     if (pattern) {
@@ -1391,9 +1391,25 @@ export class AutomaticIndexer {
 
         // Determine language from file extension
         const ext = path.extname(file).toLowerCase();
-        let language = 'typescript';
-        if (ext === '.js' || ext === '.jsx') language = 'javascript';
-        else if (ext === '.py') language = 'python';
+        const languageMap: Record<string, string> = {
+          '.ts': 'typescript',
+          '.tsx': 'typescript',
+          '.mts': 'typescript',
+          '.cts': 'typescript',
+          '.js': 'javascript',
+          '.jsx': 'javascript',
+          '.mjs': 'javascript',
+          '.cjs': 'javascript',
+          '.py': 'python',
+          '.md': 'markdown',
+          '.mdx': 'markdown',
+          '.html': 'html',
+          '.htm': 'html',
+          '.astro': 'html',
+          '.vue': 'html',
+          '.svelte': 'html',
+        };
+        const language = languageMap[ext] || 'text';
 
         // Process file with tree-sitter
         const result = await this.treeSitter.parseAndChunk(content, language, file);
@@ -1614,7 +1630,7 @@ export class AutomaticIndexer {
           rateLimit: 1000,
           maxChunkSize: 1500,
           filePatterns: [
-            '**/*.{ts,tsx,js,jsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh,md}',
+            '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
           ],
         }
       );

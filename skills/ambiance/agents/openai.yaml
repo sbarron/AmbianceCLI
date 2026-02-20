@@ -1,0 +1,4 @@
+version: 1
+display_name: Ambiance CLI
+short_description: CLI workflows for project context, debug analysis, AST search, and embeddings.
+default_prompt: Use Ambiance CLI workflows with JSON output and explicit project paths. Prefer `context --format index` first for ranked jump targets, then use `ambiance grep` for AST-structural matching, then use native rg/grep to fill exact textual details.

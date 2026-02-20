@@ -1597,12 +1597,20 @@ export class LocalEmbeddingGenerator {
       '.lhs': 'haskell',
       '.lua': 'lua',
       '.md': 'markdown',
+      '.mdx': 'markdown',
       '.json': 'json',
       '.yaml': 'yaml',
       '.yml': 'yaml',
       '.xml': 'xml',
       '.html': 'html',
+      '.htm': 'html',
+      '.astro': 'html',
+      '.vue': 'html',
+      '.svelte': 'html',
       '.css': 'css',
+      '.scss': 'css',
+      '.sass': 'css',
+      '.less': 'css',
       '.sql': 'sql',
     };
 
@@ -1624,8 +1632,7 @@ export class LocalEmbeddingGenerator {
     const { globby } = await import('globby');
 
     const defaultPatterns = [
-      '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,c,cpp,cc,cxx,h,hpp,hh,hxx,cs,php,rb,swift,kt,kts,scala,sh,bash,zsh,ex,exs,hs,lhs,lua}',
-      '**/*.{md,json,yaml,yml,xml,html,css,sql}',
+      '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
       '!node_modules/**',
       '!dist/**',
       '!build/**',
@@ -1637,6 +1644,8 @@ export class LocalEmbeddingGenerator {
 
     let files = await globby(searchPatterns, {
       cwd: projectPath,
+      gitignore: true,
+      ignoreFiles: ['.gitignore', '.cursorignore', '.vscodeignore', '.ambianceignore'],
       absolute: true,
       onlyFiles: true,
     });
@@ -1889,7 +1898,7 @@ export class LocalEmbeddingGenerator {
       rateLimit = 1000,
       maxChunkSize = 1500,
       filePatterns = [
-        '**/*.{ts,tsx,js,jsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh,md}',
+        '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
       ],
     } = options;
 
@@ -1950,16 +1959,64 @@ export class LocalEmbeddingGenerator {
           }
         }
       } else {
-        // Auto-detect changed files (would need file modification time comparison)
-        // For now, fall back to processing recent files or all files
-        logger.info('📋 No specific files provided, checking for recently modified files');
+        // Auto-detect changed files by comparing disk mtimes with stored file metadata mtimes.
+        logger.info('📋 No specific files provided, auto-detecting stale files from metadata');
 
-        // This is a placeholder - in a real implementation, you'd compare file modification times
-        // against last embedding update times stored in the database
-        logger.warn(
-          '⚠️ Auto-detection of changed files not yet implemented, consider providing specific files'
-        );
-        result.errors.push('Auto-detection of changed files not implemented');
+        const dbFiles = await this.storage.listProjectFiles(projectId);
+        const staleFiles: string[] = [];
+
+        for (const dbFile of dbFiles) {
+          const fullPath = path.join(projectPath, dbFile.path);
+          if (!fs.existsSync(fullPath)) {
+            continue;
+          }
+
+          try {
+            const diskStats = fs.statSync(fullPath);
+            if (diskStats.mtime > dbFile.lastModified) {
+              staleFiles.push(dbFile.path);
+            }
+          } catch (error) {
+            const errorMsg = `Failed to stat ${dbFile.path}: ${error instanceof Error ? error.message : String(error)}`;
+            logger.warn(errorMsg);
+            result.errors.push(errorMsg);
+          }
+        }
+
+        if (staleFiles.length === 0) {
+          logger.info('✅ No stale files detected for incremental embedding update', {
+            projectId,
+            trackedFiles: dbFiles.length,
+          });
+        } else {
+          logger.info('🛠️ Processing auto-detected stale files', {
+            projectId,
+            staleFiles: staleFiles.length,
+          });
+
+          for (const relativeFilePath of staleFiles) {
+            try {
+              const fullPath = path.resolve(projectPath, relativeFilePath);
+              if (!fs.existsSync(fullPath)) {
+                continue;
+              }
+
+              const fileResult = await this.processSingleFile(projectId, fullPath, projectPath, {
+                batchSize,
+                rateLimit,
+                maxChunkSize,
+              });
+
+              result.processedFiles++;
+              result.embeddings += fileResult.embeddings;
+              result.totalChunks += fileResult.chunks;
+            } catch (error) {
+              const errorMsg = `Failed to update embeddings for ${relativeFilePath}: ${error instanceof Error ? error.message : String(error)}`;
+              logger.error(`❌ ${errorMsg}`);
+              result.errors.push(errorMsg);
+            }
+          }
+        }
       }
 
       logger.info('✅ Incremental embedding update completed', {

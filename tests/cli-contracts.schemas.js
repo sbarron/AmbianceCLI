@@ -53,7 +53,7 @@ const migrateMcpMapSchema = jsonEnvelopeSchema.extend({
 const hintsSchema = jsonEnvelopeSchema.extend({
   command: z.literal('hints'),
   exitCode: z.literal(0),
-  hints: z.string(),
+  hints: z.union([z.string(), z.record(z.any())]),
   type: z.string().optional(),
   metadata: z.record(z.any()).optional(),
 });
@@ -104,6 +104,9 @@ const grepSchema = jsonEnvelopeSchema.extend({
   executionTime: z.number(),
   pattern: z.string(),
   language: z.string().optional(),
+  engineUsed: z.enum(['ast-grep', 'text-fallback']).optional(),
+  degraded: z.boolean().optional(),
+  fallbackReason: z.string().optional(),
   error: z.string().optional(),
 });
 
