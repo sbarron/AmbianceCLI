@@ -545,7 +545,7 @@ export class ProjectHintsGenerator {
    */
   private extractFirstMeaningfulParagraph(content: string): string | null {
     const lines = content.split('\n');
-    let paragraphLines: string[] = [];
+    const paragraphLines: string[] = [];
     let inCodeBlock = false;
 
     for (const line of lines) {
@@ -620,7 +620,7 @@ export class ProjectHintsGenerator {
         f.relPath.toLowerCase().includes('page')
     );
 
-    let purposeParts: string[] = [];
+    const purposeParts: string[] = [];
 
     // Determine project type
     if (hasCli && hasApi) {
@@ -988,10 +988,11 @@ export class ProjectHintsGenerator {
 
         // Filter out symbols that only appear in test folders
         const folders = Array.from(data.folders);
-        const allInTests = folders.every(f =>
-          f.toLowerCase().includes('test') ||
-          f.toLowerCase().includes('spec') ||
-          f.toLowerCase().includes('__tests__')
+        const allInTests = folders.every(
+          f =>
+            f.toLowerCase().includes('test') ||
+            f.toLowerCase().includes('spec') ||
+            f.toLowerCase().includes('__tests__')
         );
         if (allInTests && folders.length > 0) return false;
 
@@ -1001,10 +1002,11 @@ export class ProjectHintsGenerator {
         const folders = Array.from(data.folders);
 
         // Calculate relevance score: production code > test code
-        const testFolderCount = folders.filter(f =>
-          f.toLowerCase().includes('test') ||
-          f.toLowerCase().includes('spec') ||
-          f.toLowerCase().includes('__tests__')
+        const testFolderCount = folders.filter(
+          f =>
+            f.toLowerCase().includes('test') ||
+            f.toLowerCase().includes('spec') ||
+            f.toLowerCase().includes('__tests__')
         ).length;
 
         const productionScore = folders.length - testFolderCount;

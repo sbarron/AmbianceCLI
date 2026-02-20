@@ -97,7 +97,9 @@ export class RelevanceScorer {
   ): ScoredSymbol {
     const reasoning: string[] = [];
 
-    const queryMatchScore = context.query ? this.calculateQueryMatchScore(symbol, context.query) : 0;
+    const queryMatchScore = context.query
+      ? this.calculateQueryMatchScore(symbol, context.query)
+      : 0;
     const relevanceScore = this.calculateRelevanceScore(
       symbol,
       context,
@@ -667,7 +669,10 @@ export class RelevanceScorer {
   /**
    * Keep query-driven contexts focused even when token budget is large enough to include everything.
    */
-  private applyQueryFocus(scoredSymbols: ScoredSymbol[], context: RelevanceContext): ScoredSymbol[] {
+  private applyQueryFocus(
+    scoredSymbols: ScoredSymbol[],
+    context: RelevanceContext
+  ): ScoredSymbol[] {
     const query = context.query?.trim();
     if (!query || scoredSymbols.length === 0) {
       return scoredSymbols;

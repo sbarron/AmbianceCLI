@@ -89,7 +89,9 @@ export async function handleSemanticCompact(args: any): Promise<any> {
 
       // Automatic embedding sync when enabled
       const shouldPerformAutoSync = autoSync || false; // Keep explicit flag for now
-      const { shouldAutoSync: checkAutoSync, isAutoSyncEnabled } = await import('../../local/autoSyncManager');
+      const { shouldAutoSync: checkAutoSync, isAutoSyncEnabled } = await import(
+        '../../local/autoSyncManager'
+      );
 
       // Determine if we should sync: explicit flag OR automatic check
       let performSync = shouldPerformAutoSync;
@@ -99,7 +101,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         // Check if automatic sync is needed
         try {
           const { ProjectIdentifier } = await import('../../local/projectIdentifier');
-          const projectInfo = await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+          const projectInfo =
+            await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
           const projectId = projectInfo.id;
           const syncCheck = await checkAutoSync(projectId);
 
@@ -153,7 +156,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             }
 
             // Record successful sync
-            const projectInfo = await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+            const projectInfo =
+              await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
             await recordSync(projectInfo.id);
 
             logger.info('✅ Context auto-sync completed', {
@@ -178,7 +182,11 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       }
 
       // Enhanced mode: Use new local_context implementation if query is provided
-      if (query && (format === 'enhanced' || format === 'system-map' || format === 'index') && !folderPath) {
+      if (
+        query &&
+        (format === 'enhanced' || format === 'system-map' || format === 'index') &&
+        !folderPath
+      ) {
         // Auto-enable embeddings when local storage is enabled and we have a query
         const localStorageEnabled = process.env.USE_LOCAL_EMBEDDINGS === 'true';
         const enhancedAvailable = EnhancedSemanticCompactor.isEnhancedModeAvailable();
@@ -257,7 +265,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
               metadata: {
                 originalTokens: Math.round(
                   (enhancedResult.metadata.tokenCount || 0) /
-                  (enhancedResult.metadata.compressionRatio || 1)
+                    (enhancedResult.metadata.compressionRatio || 1)
                 ),
                 compactedTokens: cappedTokens,
                 compressionRatio: enhancedResult.metadata.compressionRatio || 1,
@@ -425,7 +433,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             metadata: {
               originalTokens: Math.round(
                 (enhancedResult.metadata.tokenCount || 0) /
-                (enhancedResult.metadata.compressionRatio || 1)
+                  (enhancedResult.metadata.compressionRatio || 1)
               ),
               compactedTokens: cappedTokens,
               compressionRatio: enhancedResult.metadata.compressionRatio || 1,
@@ -532,10 +540,10 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             });
 
             process.on('exit', () => {
-              fs.rm(tempDir, { recursive: true, force: true }).catch(() => { });
+              fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
             });
             process.on('beforeExit', () => {
-              fs.rm(tempDir, { recursive: true, force: true }).catch(() => { });
+              fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
             });
           } catch (error) {
             await fs.rm(tempDir, { recursive: true, force: true });
@@ -546,7 +554,15 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         // Create semantic compactor instance (self-contained, no external deps)
         const compactor = new SemanticCompactor(analysisPath, {
           maxTotalTokens: maxTokens,
-          supportedLanguages: ['typescript', 'javascript', 'python', 'go', 'rust', 'html', 'markdown'],
+          supportedLanguages: [
+            'typescript',
+            'javascript',
+            'python',
+            'go',
+            'rust',
+            'html',
+            'markdown',
+          ],
           includeSourceCode: false, // Keep lightweight - just signatures and docs
           prioritizeExports: true,
           includeDocstrings: true,
@@ -555,10 +571,10 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         // Create relevance context if query provided
         const relevanceContext = query
           ? {
-            query,
-            taskType,
-            maxTokens,
-          }
+              query,
+              taskType,
+              maxTokens,
+            }
           : undefined;
 
         // Process and compact - all local, no external API calls

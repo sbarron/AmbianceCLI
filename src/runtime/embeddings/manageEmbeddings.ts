@@ -325,7 +325,11 @@ export async function getEmbeddingStatus(args: {
       });
 
       if (details?.coverage) {
-        return { ...result, coverage: details.coverage, ...(warnings.length > 0 ? { warnings } : {}) };
+        return {
+          ...result,
+          coverage: details.coverage,
+          ...(warnings.length > 0 ? { warnings } : {}),
+        };
       }
     } catch (error) {
       // Non-fatal; include warning so callers can diagnose partial status.

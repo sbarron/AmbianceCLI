@@ -5,7 +5,7 @@
   "main": "dist/src/cli.js",
   "types": "dist/src/cli.d.ts",
   "bin": {
-    "ambiance": "./dist/src/cli.js"
+    "ambiance": "dist/src/cli.js"
   },
   "keywords": [
     "rag",
@@ -25,7 +25,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sbarron/AmbianceCLI"
+    "url": "git+https://github.com/sbarron/AmbianceCLI.git"
   },
   "bugs": {
     "url": "https://github.com/sbarron/AmbianceCLI/issues"

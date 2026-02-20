@@ -968,4 +968,5 @@ For MCP-hosted agents that still reference legacy tool names:
 ambiance migrate mcp-map --json
 ```
 
-This command returns the canonical MCP-tool → CLI-command mapping. See `MIGRATION.md` for full migration guide.
+This command returns the canonical MCP-tool -> CLI-command mapping for compatibility workflows.
+

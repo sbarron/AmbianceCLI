@@ -424,7 +424,7 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     const allMatches = [...astMatches, ...extraCandidates];
     const candidates = await rankCandidates(allMatches, indices, request.query, plan);
 
-  // 6. Select top jump targets (respect maxSimilarChunks) with enhancements
+    // 6. Select top jump targets (respect maxSimilarChunks) with enhancements
     let jumpTargets = await selectJumpTargets(candidates, {
       max: Math.max(1, Math.min(request.maxSimilarChunks, 20)),
       query: request.query,
@@ -855,9 +855,7 @@ function calculateRelevance(candidate: CandidateSymbol, query: string): number {
 
   // Query words match symbol parts
   const queryWords = queryLower.split(/\s+/);
-  const matchedWords = queryWords.filter(
-    word => word.length > 2 && symbolLower.includes(word)
-  );
+  const matchedWords = queryWords.filter(word => word.length > 2 && symbolLower.includes(word));
   score += (matchedWords.length / queryWords.length) * 0.2;
 
   // File path relevance

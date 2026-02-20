@@ -75,7 +75,7 @@ export async function shouldAutoSync(projectId: string): Promise<{
       return {
         shouldSync: false,
         reason: 'Recently checked',
-        timeSinceLastSync: now - cached.lastSyncTime
+        timeSinceLastSync: now - cached.lastSyncTime,
       };
     }
   }
@@ -98,7 +98,7 @@ export async function shouldAutoSync(projectId: string): Promise<{
       return {
         shouldSync: true,
         reason: 'No previous sync found',
-        timeSinceLastSync: undefined
+        timeSinceLastSync: undefined,
       };
     }
 

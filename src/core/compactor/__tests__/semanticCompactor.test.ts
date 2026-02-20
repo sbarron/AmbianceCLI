@@ -792,4 +792,3 @@ exports.helperFunction = function(data) {
     )
   );
 }
-

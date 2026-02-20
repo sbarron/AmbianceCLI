@@ -148,8 +148,9 @@ export async function generateProjectManifest(args: ManifestRequest): Promise<Ma
         if (symbols.length > 0) {
           languagesSet.add(file.language);
 
-          const functionCount = symbols.filter(s => s.kind === 'function' || s.kind === 'method')
-            .length;
+          const functionCount = symbols.filter(
+            s => s.kind === 'function' || s.kind === 'method'
+          ).length;
           const classCount = symbols.filter(s => s.kind === 'class').length;
           const interfaceCount = symbols.filter(s => s.kind === 'interface').length;
 

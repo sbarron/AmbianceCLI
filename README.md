@@ -2,7 +2,7 @@
 
 CLI-first local code context and analysis for agent workflows.
 
-> MCP users: start with `ambiance migrate mcp-map --json` and see `MIGRATION.md`.
+> MCP users: start with `ambiance migrate mcp-map --json` for the current CLI mapping.
 
 ## Install
 
@@ -68,7 +68,6 @@ Ambiance ships versioned skill templates in `skills/ambiance`.
 MCP remains available as a compatibility path, but CLI is now the primary interface.
 
 - Bridge command: `ambiance migrate mcp-map --json`
-- Migration guide: `MIGRATION.md`
 
 ## Notes for Automation
 

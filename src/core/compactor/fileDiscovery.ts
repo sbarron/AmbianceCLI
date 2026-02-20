@@ -531,8 +531,9 @@ export class FileDiscovery {
         followSymbolicLinks: false,
       });
 
-      const initiallyHardExcluded = filePaths.filter(filePath => this.isHardExcludedPath(filePath))
-        .length;
+      const initiallyHardExcluded = filePaths.filter(filePath =>
+        this.isHardExcludedPath(filePath)
+      ).length;
       const candidateFilePaths = filePaths.filter(filePath => !this.isHardExcludedPath(filePath));
 
       logger.info('Found potential files', {

@@ -696,7 +696,14 @@ async function executeRipgrepFallback(options: {
   }
 
   const glob = languageToGlob(options.language);
-  const args = ['--line-number', '--column', '--no-heading', '--smart-case', '--max-count', String(options.maxMatches)];
+  const args = [
+    '--line-number',
+    '--column',
+    '--no-heading',
+    '--smart-case',
+    '--max-count',
+    String(options.maxMatches),
+  ];
   if (glob) {
     args.push('--glob', glob);
   }
@@ -768,7 +775,11 @@ async function executeInProcessTextFallback(
   for (const rel of files as string[]) {
     if (matches.length >= options.maxMatches) break;
     const full = path.join(options.projectPath, rel);
-    if (/[\\/]node_modules[\\/]|[\\/]dist[\\/]|[\\/]build[\\/]|[\\/]coverage[\\/]|[\\/]\\.git[\\/]/i.test(full)) {
+    if (
+      /[\\/]node_modules[\\/]|[\\/]dist[\\/]|[\\/]build[\\/]|[\\/]coverage[\\/]|[\\/]\\.git[\\/]/i.test(
+        full
+      )
+    ) {
       continue;
     }
     if (exts && !exts.some(ext => full.toLowerCase().endsWith(ext))) continue;
@@ -1012,9 +1023,9 @@ export async function executeAstGrep(options: {
             args: [
               '-Command',
               'npx ast-grep ' +
-              cliArgs
-                .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
-                .join(' '),
+                cliArgs
+                  .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
+                  .join(' '),
             ],
             options: { shell: false },
           },
@@ -1135,7 +1146,7 @@ export async function executeAstGrep(options: {
           reject(
             new Error(
               'Failed to parse ast-grep output: ' +
-              (parseError instanceof Error ? parseError.message : String(parseError))
+                (parseError instanceof Error ? parseError.message : String(parseError))
             )
           );
         }
@@ -1198,12 +1209,12 @@ export async function executeAstGrep(options: {
         reject(
           new Error(
             'Failed to spawn ast-grep (' +
-            executionMethod +
-            '): ' +
-            processError.message +
-            ' (code: ' +
-            (processError as any).code +
-            '). Make sure @ast-grep/cli is installed and accessible.'
+              executionMethod +
+              '): ' +
+              processError.message +
+              ' (code: ' +
+              (processError as any).code +
+              '). Make sure @ast-grep/cli is installed and accessible.'
           )
         );
       });

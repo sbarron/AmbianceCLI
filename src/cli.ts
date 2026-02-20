@@ -492,7 +492,10 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
 const { options: globalOptions, remaining } = parseGlobalOptions(args);
 
 function isJsonMode(options: GlobalOptions): boolean {
-  return options.json === true || (typeof options.format === 'string' && options.format.toLowerCase() === 'json');
+  return (
+    options.json === true ||
+    (typeof options.format === 'string' && options.format.toLowerCase() === 'json')
+  );
 }
 
 function resolveToolFormat(options: GlobalOptions, fallback: string): string {
@@ -1035,7 +1038,11 @@ async function executeToolCommand(
 
         result = await handleProjectManifest({
           projectPath: globalOptions.projectPath || detectProjectPath(),
-          format: resolveToolFormat(globalOptions, 'compact') as 'compact' | 'tree' | 'json' | 'flat',
+          format: resolveToolFormat(globalOptions, 'compact') as
+            | 'compact'
+            | 'tree'
+            | 'json'
+            | 'flat',
           ...parsedArgs,
         });
         break;
@@ -1982,9 +1989,7 @@ function parseToolSpecificArgs(args: string[], allowedKeys: string[]): ToolArgMa
     if (arg.startsWith('--')) {
       const rawKey = arg.replace('--', '');
       const key = normalizeToolOptionKey(rawKey);
-      const matchedKey = allowedKeys.find(
-        allowed => normalizeToolOptionKey(allowed) === key
-      );
+      const matchedKey = allowedKeys.find(allowed => normalizeToolOptionKey(allowed) === key);
       if (matchedKey) {
         if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
           const value = args[++i];
