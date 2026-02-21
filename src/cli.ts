@@ -611,6 +611,10 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log(`  Version: ${packageJson.version}`);
   console.log(`  License: ${packageJson.license}`);
   console.log(`  Repository: ${packageJson.repository.url}`);
+  const baseSkillDir = findSkillBaseDirForCli();
+  if (baseSkillDir) {
+    console.log(`  Skill location: ${baseSkillDir}`);
+  }
   console.log('');
 
   if (expanded) {
@@ -859,10 +863,15 @@ function showCommandHelp(command: string): void {
       '  ambiance skill list [--json]',
       '  ambiance skill workflow <name> [--json]',
       '  ambiance skill recipe <name> [--json]',
+      '  ambiance skill install [--target <path>] [--dry-run]',
+      '',
+      '  By default, install copies the skill into known AI provider directories',
+      '  (e.g., ~/.claude, ~/.gemini, ~/.antigravity, ~/.codex, ~/.cursor).',
       '',
       'Examples:',
       '  ambiance skill workflow understand --json',
       '  ambiance skill recipe context --json',
+      '  ambiance skill install --dry-run',
     ],
     migrate: [
       'ambiance migrate',
@@ -1350,10 +1359,46 @@ async function executeToolCommand(
           break;
         }
 
+        if (subcommand === 'install') {
+          const baseDir = findSkillBaseDirForCli();
+          if (!baseDir) {
+            exitWithError({
+              command: 'skill',
+              message: 'skills/ambiance directory not found (cannot install)',
+              options: globalOptions,
+              exitCode: EXIT_CODES.RUNTIME_ERROR,
+            });
+          }
+
+          const parsed = parseToolSpecificArgs(toolArgs, ['target', 'dryRun']);
+          const targetDir = typeof parsed.target === 'string' ? parsed.target : undefined;
+          const dryRun = parsed.dryRun === true;
+
+          const { runSkillInstall } = await import('./runtime/skill/install');
+
+          try {
+            const report = await runSkillInstall({
+              sourceDir: baseDir,
+              targetDir,
+              dryRun,
+            });
+            result = report;
+          } catch (e) {
+            exitWithError({
+              command: 'skill',
+              message: `Install failed: ${e instanceof Error ? e.message : String(e)}`,
+              options: globalOptions,
+              exitCode: EXIT_CODES.RUNTIME_ERROR,
+            });
+          }
+
+          break;
+        }
+
         if (subcommand !== 'verify') {
           exitWithError({
             command: 'skill',
-            message: `Unknown skill subcommand: ${subcommand} (supported: verify, list, workflow, recipe)`,
+            message: `Unknown skill subcommand: ${subcommand} (supported: verify, list, workflow, recipe, install)`,
             options: globalOptions,
             exitCode: EXIT_CODES.USAGE_ERROR,
           });
