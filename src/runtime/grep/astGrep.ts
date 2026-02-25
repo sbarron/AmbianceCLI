@@ -41,6 +41,9 @@ export interface AstGrepResult {
   degraded?: boolean;
   fallbackReason?: string;
   error?: string;
+  content?: string;
+  success?: boolean;
+  excludePatterns?: string[];
 }
 
 /**
@@ -620,11 +623,18 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
       }
     }
 
-    return {
+    const unformattedResult = {
       ...result,
       executionTime,
       pattern: pattern ?? '(rule)',
       language: languageToUse,
+      excludePatterns: args.excludePatterns,
+    };
+
+    return {
+      ...unformattedResult,
+      content: formatAstGrepOutput(unformattedResult.matches, unformattedResult.pattern),
+      success: true,
     };
   } catch (error) {
     const executionTime = Date.now() - startTime;
@@ -647,15 +657,21 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
           projectPath: String(args.projectPath || process.cwd()),
           maxMatches: Number(args.maxMatches || 100),
           language: args.language,
+          excludePatterns: args.excludePatterns,
         });
-        return {
+        const unformattedFallbackResult = {
           ...fallback,
           executionTime,
           pattern: String(args.pattern),
           language: args.language,
-          engineUsed: 'text-fallback',
+          engineUsed: 'text-fallback' as const,
           degraded: true,
           fallbackReason: rawErrorMessage,
+        };
+        return {
+          ...unformattedFallbackResult,
+          content: formatAstGrepOutput(unformattedFallbackResult.matches, unformattedFallbackResult.pattern),
+          success: true,
         };
       } catch (fallbackError) {
         logger.warn('Text fallback after ast-grep failure also failed', {
@@ -680,6 +696,7 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
       engineUsed: 'ast-grep',
       degraded: false,
       error: errorMessage,
+      excludePatterns: args.excludePatterns,
     };
   }
 }
@@ -689,6 +706,7 @@ async function executeRipgrepFallback(options: {
   projectPath: string;
   maxMatches: number;
   language?: string;
+  excludePatterns?: string[];
 }): Promise<AstGrepResult> {
   const literal = extractFallbackLiteral(options.pattern);
   if (!literal) {
@@ -761,11 +779,12 @@ async function executeRipgrepFallback(options: {
     language: options.language,
     engineUsed: 'text-fallback',
     degraded: true,
+    excludePatterns: options.excludePatterns,
   };
 }
 
 async function executeInProcessTextFallback(
-  options: { pattern: string; projectPath: string; maxMatches: number; language?: string },
+  options: { pattern: string; projectPath: string; maxMatches: number; language?: string; excludePatterns?: string[] },
   literal: string
 ): Promise<AstGrepResult> {
   const files = await fs.readdir(options.projectPath, { recursive: true } as any).catch(() => []);
@@ -817,6 +836,7 @@ async function executeInProcessTextFallback(
     language: options.language,
     engineUsed: 'text-fallback',
     degraded: true,
+    excludePatterns: options.excludePatterns,
   };
 }
 
@@ -1023,9 +1043,9 @@ export async function executeAstGrep(options: {
             args: [
               '-Command',
               'npx ast-grep ' +
-                cliArgs
-                  .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
-                  .join(' '),
+              cliArgs
+                .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
+                .join(' '),
             ],
             options: { shell: false },
           },
@@ -1146,7 +1166,7 @@ export async function executeAstGrep(options: {
           reject(
             new Error(
               'Failed to parse ast-grep output: ' +
-                (parseError instanceof Error ? parseError.message : String(parseError))
+              (parseError instanceof Error ? parseError.message : String(parseError))
             )
           );
         }
@@ -1209,12 +1229,12 @@ export async function executeAstGrep(options: {
         reject(
           new Error(
             'Failed to spawn ast-grep (' +
-              executionMethod +
-              '): ' +
-              processError.message +
-              ' (code: ' +
-              (processError as any).code +
-              '). Make sure @ast-grep/cli is installed and accessible.'
+            executionMethod +
+            '): ' +
+            processError.message +
+            ' (code: ' +
+            (processError as any).code +
+            '). Make sure @ast-grep/cli is installed and accessible.'
           )
         );
       });
@@ -1296,15 +1316,63 @@ function parseAstGrepOutput(
       }
     }
 
+    // Deduplicate structural hits on exact same file + line + column
+    const seenCoordinates = new Set<string>();
+    const deduplicatedMatches: AstGrepMatch[] = [];
+
+    for (const match of allMatches) {
+      const coordKey = `${match.file}:${match.range.start.line}:${match.range.start.column}`;
+      if (!seenCoordinates.has(coordKey)) {
+        seenCoordinates.add(coordKey);
+        deduplicatedMatches.push(match);
+      }
+    }
+
     return {
-      matches: allMatches,
-      totalMatches: totalParsedMatches,
+      matches: deduplicatedMatches,
+      totalMatches: deduplicatedMatches.length,
     };
   } catch (error) {
     logger.warn('Failed to parse ast-grep output', { error, output: output.substring(0, 200) });
     return { matches: [], totalMatches: 0 };
   }
 }
+
+/**
+ * Format the output of AST-grep matches into a clean string layout broken out by file.
+ */
+function formatAstGrepOutput(matches: AstGrepMatch[], pattern: string): string {
+  if (matches.length === 0) {
+    return `No matches found for pattern: ${pattern}`;
+  }
+
+  const groupedByFile = matches.reduce((acc, match) => {
+    if (!acc[match.file]) {
+      acc[match.file] = [];
+    }
+    acc[match.file].push(match);
+    return acc;
+  }, {} as Record<string, AstGrepMatch[]>);
+
+  const sections: string[] = [];
+  sections.push(`## Grep Results For: \`${pattern}\` (${matches.length} matches)`);
+  sections.push('');
+
+  for (const [file, fileMatches] of Object.entries(groupedByFile)) {
+    sections.push(`### 📄 ${file}`);
+    const uniqueLines = new Set<string>();
+    for (const match of fileMatches) {
+      const lineStr = match.text.trim();
+      if (!lineStr) continue;
+      uniqueLines.add(`- **L${match.range.start.line}**: \`${lineStr}\``);
+    }
+    sections.push(...Array.from(uniqueLines));
+    sections.push('');
+  }
+
+  return sections.join('\\n').trim();
+}
+
 
 /**
  * Filter matches by additional exclude patterns

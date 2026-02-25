@@ -80,6 +80,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         folderPath,
         useEmbeddings = false,
         embeddingSimilarityThreshold = 0.2,
+        showmetadata = false,
       } = args;
 
       const excludeRegexes = compileExcludePatterns(excludePatterns);
@@ -265,7 +266,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
               metadata: {
                 originalTokens: Math.round(
                   (enhancedResult.metadata.tokenCount || 0) /
-                    (enhancedResult.metadata.compressionRatio || 1)
+                  (enhancedResult.metadata.compressionRatio || 1)
                 ),
                 compactedTokens: cappedTokens,
                 compressionRatio: enhancedResult.metadata.compressionRatio || 1,
@@ -313,8 +314,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
           if (enhancedResult.success) {
             return {
               success: true,
-              compactedContent: formatEnhancedContextOutput(enhancedResult, maxTokens, format),
-              metadata: enhancedResult.metadata,
+              compactedContent: formatEnhancedContextOutput(enhancedResult, query, maxTokens, format),
+              ...(showmetadata ? { metadata: enhancedResult.metadata } : {}),
               usage: `Enhanced context analysis: ${enhancedResult.metadata.bundleTokens} tokens in ${enhancedResult.jumpTargets.length} locations`,
               enhanced: true,
               jumpTargets: enhancedResult.jumpTargets,
@@ -322,6 +323,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
               answerDraft: enhancedResult.answerDraft,
               nextActions: enhancedResult.next,
               evidence: enhancedResult.evidence,
+              ...(showmetadata ? { llmBundle: enhancedResult.llmBundle } : {}),
             };
           } else {
             // Fall back to legacy mode if enhanced mode fails
@@ -430,21 +432,23 @@ export async function handleSemanticCompact(args: any): Promise<any> {
           return {
             success: true,
             compactedContent: cappedContent,
-            metadata: {
-              originalTokens: Math.round(
-                (enhancedResult.metadata.tokenCount || 0) /
+            ...(showmetadata ? {
+              metadata: {
+                originalTokens: Math.round(
+                  (enhancedResult.metadata.tokenCount || 0) /
                   (enhancedResult.metadata.compressionRatio || 1)
-              ),
-              compactedTokens: cappedTokens,
-              compressionRatio: enhancedResult.metadata.compressionRatio || 1,
-              filesProcessed: enhancedResult.metadata.includedFiles || 0,
-              symbolsFound: 0, // Enhanced compactor doesn't track symbols the same way
-              symbolsAfterCompaction: 0, // Enhanced compactor doesn't track symbols the same way
-              processingTimeMs: 0, // Could add timing to enhanced compactor
-              format,
-              embeddingsUsed: enhancedResult.metadata.embeddingsUsed,
-              similarChunksFound: enhancedResult.metadata.similarChunksFound,
-            },
+                ),
+                compactedTokens: cappedTokens,
+                compressionRatio: enhancedResult.metadata.compressionRatio || 1,
+                filesProcessed: enhancedResult.metadata.includedFiles || 0,
+                symbolsFound: 0, // Enhanced compactor doesn't track symbols the same way
+                symbolsAfterCompaction: 0, // Enhanced compactor doesn't track symbols the same way
+                processingTimeMs: 0, // Could add timing to enhanced compactor
+                format,
+                embeddingsUsed: enhancedResult.metadata.embeddingsUsed,
+                similarChunksFound: enhancedResult.metadata.similarChunksFound,
+              },
+            } : {}),
             usage: `Enhanced context with ${enhancedResult.metadata.embeddingsUsed ? 'embeddings' : 'base compaction'}: ${cappedTokens} tokens (cap=${maxTokens})`,
           };
         }
@@ -540,10 +544,10 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             });
 
             process.on('exit', () => {
-              fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+              fs.rm(tempDir, { recursive: true, force: true }).catch(() => { });
             });
             process.on('beforeExit', () => {
-              fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+              fs.rm(tempDir, { recursive: true, force: true }).catch(() => { });
             });
           } catch (error) {
             await fs.rm(tempDir, { recursive: true, force: true });
@@ -571,10 +575,10 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         // Create relevance context if query provided
         const relevanceContext = query
           ? {
-              query,
-              taskType,
-              maxTokens,
-            }
+            query,
+            taskType,
+            maxTokens,
+          }
           : undefined;
 
         // Process and compact - all local, no external API calls
@@ -638,7 +642,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         return {
           success: true,
           compactedContent: formattedContent,
-          metadata: responseMetadata,
+          ...(showmetadata ? { metadata: responseMetadata } : {}),
           usage: `Reduced context from ${originalTokens} to ${finalTokens} tokens (${Math.round(((result as any).compressionRatio || 1) * 100)}% compression, cap=${maxTokens})`,
         };
       } catch (error) {
@@ -674,6 +678,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
  */
 function formatEnhancedContextOutput(
   result: LocalContextResponse,
+  query?: string,
   maxTokens?: number,
   format?: string
 ): string {
@@ -681,24 +686,44 @@ function formatEnhancedContextOutput(
 
   // Answer Draft Section
   sections.push('## Query Analysis\n');
+  if (query) {
+    sections.push(`**Semantic Search Context For:** ${query}\n`);
+  }
   sections.push(result.answerDraft);
   sections.push('');
 
   // Jump Targets Section
   if (result.jumpTargets.length > 0) {
     sections.push('## Key Locations\n');
-    result.jumpTargets.forEach((target, index) => {
-      const location =
-        target.start && target.end ? `${target.file}:${target.start}-${target.end}` : target.file;
 
-      sections.push(`${index + 1}. **${target.symbol}** (${target.role})`);
-      sections.push(`   📍 ${location}`);
-      sections.push(`   🔍 Confidence: ${Math.round(target.confidence * 100)}%`);
-      if (target.why && target.why.length > 0) {
-        sections.push(`   💡 ${target.why.join(', ')}`);
-      }
-      sections.push('');
+    // Group targets by file
+    const targetsByFile = new Map<string, typeof result.jumpTargets>();
+    result.jumpTargets.forEach(target => {
+      const fileTargets = targetsByFile.get(target.file) || [];
+      fileTargets.push(target);
+      targetsByFile.set(target.file, fileTargets);
     });
+
+    for (const [file, targets] of targetsByFile.entries()) {
+      sections.push(`### 📄 ${file}`);
+
+      const symbolParts = targets.map(t => {
+        const lineInfo = t.start && t.end ? ` (L${t.start}-L${t.end})` : '';
+        return `**${t.symbol}**${lineInfo}`;
+      });
+      sections.push(`- **Symbols**: ${symbolParts.join(', ')}`);
+
+      const roles = Array.from(new Set(targets.map(t => t.role).filter(Boolean)));
+      const avgConf = Math.round((targets.reduce((sum, t) => sum + t.confidence, 0) / targets.length) * 100);
+      const roleStr = roles.length > 0 ? `[${roles.join(', ')}] ` : '';
+
+      const allWhys = targets.flatMap(t => t.why || []);
+      const uniqueWhys = Array.from(new Set(allWhys));
+      const whyStr = uniqueWhys.length > 0 ? ` 💡 ${uniqueWhys.join(' | ')}` : '';
+
+      sections.push(`- **Relevance**: ${roleStr}🔍 ~${avgConf}%${whyStr}`);
+      sections.push('');
+    }
   }
 
   // Mini Bundle Section

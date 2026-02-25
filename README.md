@@ -1,8 +1,12 @@
 # Ambiance CLI
 
-CLI-first local code context and analysis for agent workflows.
+CLI-first Agent Accessible local code context and analysis for agent workflows.  Uses AST-grep for semantic code search and analysis with compacting for token efficiency. AmbianceCLI fetches appropriate context from accross the project, your agent decides where to dig deeper. Meaning faster, more efficient, code completion. 
 
-> MCP users: start with `ambiance migrate mcp-map --json` for the current CLI mapping.
+
+### `ambiance context` — Semantic code search
+Instead of grepping through hundreds of files, ask a natural language question and get ranked results with jump targets, key symbols, and config — in milliseconds.
+
+![ambiance context demo](https://raw.githubusercontent.com/sbarron/AmbianceCLI/master/demo/context-scenario-c-demo.gif)
 
 ## Install
 
@@ -25,12 +29,7 @@ ambiance doctor --json
 ambiance skill verify --json
 ```
 
-## Demos
-
-### `ambiance context` — Semantic code search
-Instead of grepping through hundreds of files, ask a natural language question and get ranked results with jump targets, key symbols, and config — in milliseconds.
-
-![ambiance context demo](https://raw.githubusercontent.com/sbarron/AmbianceCLI/master/demo/context-scenario-c-demo.gif)
+## More Demos
 
 ### `ambiance hints` — Instant project orientation
 One command gives any agent or developer a full orientation to an unfamiliar codebase: architecture patterns, key folders, entry points, and top functions.

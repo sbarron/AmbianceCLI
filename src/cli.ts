@@ -708,6 +708,7 @@ function showCommandHelp(command: string): void {
       '  --max-similar-chunks <n>',
       '  --auto-sync            Check/update stale embeddings before generating context',
       '  --auto-sync-batch-size <n>',
+      '  --showmetadata         Show metadata block in structured output',
       '  --exclude-patterns a,b,c',
       '',
       'Examples:',
@@ -996,6 +997,7 @@ async function executeToolCommand(
           'autoSync',
           'autoSyncBatchSize',
           'excludePatterns',
+          'showmetadata',
         ];
         const positionalArgs = extractPositionalArgs(toolArgs, allowedKeys);
         const parsed = parseToolSpecificArgs(toolArgs, allowedKeys);
@@ -1023,6 +1025,7 @@ async function executeToolCommand(
           'includeContent',
           'useAI',
           'excludePatterns',
+          'showmetadata',
         ];
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleProjectHints({
