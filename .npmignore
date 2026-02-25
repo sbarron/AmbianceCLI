@@ -1,85 +1,11 @@
-# Development dependencies and tools
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-package-lock.json
-
-# Source files (TypeScript)
-src/
-scripts/
+demo/scenario-*
 tests/
-
-# Build and development artifacts
-*.tsbuildinfo
-coverage/
-jest-results.json
-*.tgz
-*.lock
-
-# Test files and utilities
-__tests__/
-__mocks__/
-test-storage/
-*.db
-*.sqlite
-*.sqlite3
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Development documentation
-agents.md
-CLAUDE.md
-QWEN.md
-Future_Plan.md
-Future_Plan_grok.md
-Final_Release_Plan.md
-Reference_Documents/
-CONTRIBUTING.md
-SKILL_IMPROVEMENTS.md
-nextsteps.md
-NextSteps.md
-AUTO_SYNC_IMPLEMENTATION.md
-CONTEXT_INDEX_ANALYSIS.md
-IMPLEMENTATION_SUMMARY.md
-MANIFEST_TOOL_PROPOSAL.md
-
-# Git and version control
-.git/
-.gitignore
-.gitattributes
-
-# CI/CD and deployment
+scripts/
 .github/
+.vscode/
+*.log
+.build-lock
+.DS_Store
 
-# Environment and config
-.env*
-.mcp.json
-.claude/
-
-# Windows specific
-*.ps1
-*.bat
-
-# Temporary and cache
-development/
-build/
-config.gypi
-
-# Development config files
-.eslintrc.js
-eslint.config.js
-jest.config.js
-jest.embedding.config.js
-.prettierignore
-.prettierrc.json
-tsconfig.json
+test-storage/
+.eslintcache
