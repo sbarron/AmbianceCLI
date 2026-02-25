@@ -67,3 +67,10 @@ SKILL_IMPROVEMENTS.md
 coverage/
 jest-results.json
 *.tgz
+
+# Demo scenario source files (only GIFs at demo root are tracked)
+demo/scenario-a/
+demo/scenario-b/
+demo/scenario-c/
+demo/scenario-d/
+demo/scenario-e/
