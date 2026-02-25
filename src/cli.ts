@@ -36,17 +36,36 @@ const packageJson = loadPackageJson();
 /**
  * Detect the appropriate project path for CLI operations
  */
-function detectProjectPath(): string {
-  // First check if WORKSPACE_FOLDER is set
-  if (process.env.WORKSPACE_FOLDER) {
-    return process.env.WORKSPACE_FOLDER;
+async function detectProjectPath(): Promise<string> {
+  const cwd = process.cwd();
+
+  // Try to check if embeddings exist for CWD
+  try {
+    const { LocalEmbeddingStorage } = require('./local/embeddingStorage');
+    const storage = new LocalEmbeddingStorage();
+    await storage.initializeDatabase();
+
+    // Check if the current directory explicitly has a project registered
+    const project = await storage.getProjectByPath(cwd);
+    if (project) {
+      const stats = await storage.getProjectStats(project.id);
+      if (stats && stats.totalChunks > 0) {
+        // Embeddings exist for CWD, prioritize it
+        if (process.env.AMBIANCE_QUIET !== 'true') {
+          console.error(`Using current directory (embeddings found): ${cwd}`);
+        }
+        return cwd;
+      }
+    }
+  } catch (e) {
+    // Ignore errors from missing DB or disabled local embeddings
   }
 
   // Use intelligent workspace detection
   // Lazy-load to avoid heavy import-time side effects for --help/--version
   const { detectWorkspaceDirectory } = require('./tools/utils/pathUtils');
   const detected = detectWorkspaceDirectory();
-  if (detected && detected !== process.cwd()) {
+  if (detected && detected !== cwd) {
     if (process.env.AMBIANCE_QUIET !== 'true') {
       console.error(`Auto-detected project directory: ${detected}`);
     }
@@ -54,7 +73,7 @@ function detectProjectPath(): string {
   }
 
   // Fallback to current directory
-  return process.cwd();
+  return cwd;
 }
 
 /**
@@ -95,7 +114,7 @@ function estimateEmbeddingTime(fileCount: number, avgFileSize: number = 5000): s
 }
 
 // Make this file a module
-export {};
+export { };
 
 type OptionValue = string | number | boolean | string[] | undefined;
 
@@ -109,6 +128,7 @@ interface GlobalOptions {
   verbose?: boolean;
   quiet?: boolean;
   expanded?: boolean;
+  copy?: boolean;
   [key: string]: OptionValue;
 }
 
@@ -447,6 +467,10 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
       options.expanded = true;
       continue;
     }
+    if (arg === '-c') {
+      options.copy = true;
+      continue;
+    }
 
     if (arg.startsWith('--')) {
       if (arg === '--project-path' && i + 1 < args.length) {
@@ -477,6 +501,8 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
         options.quiet = true;
       } else if (arg === '--verbose' || arg === '-v') {
         options.verbose = true;
+      } else if (arg === '--copy' || arg === '-c') {
+        options.copy = true;
       } else {
         // Unrecognized arguments starting with -- should go to remaining for tool-specific parsing
         remaining.push(arg);
@@ -514,6 +540,8 @@ function resolveToolFormat(options: GlobalOptions, fallback: string): string {
 if (isJsonMode(globalOptions) || globalOptions.quiet) {
   process.env.LOG_LEVEL = 'silent';
   process.env.AMBIANCE_QUIET = 'true';
+} else if (globalOptions.verbose) {
+  process.env.LOG_LEVEL = 'debug';
 }
 
 if (typeof globalOptions.useEmbeddings === 'boolean') {
@@ -588,10 +616,11 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('Global Options:');
   console.log('  --project-path <path>  Project directory path');
   console.log(
-    '  --format <format>      Command format where supported (e.g. enhanced, structured, compact)'
+    '  --format <format>      Command format where supported (e.g. index, enhanced, structured, compact)'
   );
   console.log('  --json                 Output machine-readable JSON envelope');
   console.log('  --output <file>        Write output to file');
+  console.log('  --copy, -c             Copy command output to clipboard');
   console.log('  --exclude-patterns <a,b,c>  Additional glob exclusions for supporting commands');
   console.log('  --exclude <a,b,c>      Alias for --exclude-patterns');
   console.log('  --embeddings           Force USE_LOCAL_EMBEDDINGS=true for this run');
@@ -978,7 +1007,7 @@ async function executeToolCommand(
         const { query: _query, ...parsedArgs } = parsed;
         result = await handleSemanticCompact({
           query,
-          projectPath: globalOptions.projectPath || detectProjectPath(),
+          projectPath: globalOptions.projectPath || await detectProjectPath(),
           format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
@@ -997,7 +1026,7 @@ async function executeToolCommand(
         ];
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleProjectHints({
-          projectPath: globalOptions.projectPath || detectProjectPath(),
+          projectPath: globalOptions.projectPath || await detectProjectPath(),
           format: resolveToolFormat(globalOptions, 'compact'),
           ...parsedArgs,
         });
@@ -1046,7 +1075,7 @@ async function executeToolCommand(
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
 
         result = await handleProjectManifest({
-          projectPath: globalOptions.projectPath || detectProjectPath(),
+          projectPath: globalOptions.projectPath || await detectProjectPath(),
           format: resolveToolFormat(globalOptions, 'compact') as
             | 'compact'
             | 'tree'
@@ -1063,7 +1092,7 @@ async function executeToolCommand(
         const allowedKeys = ['includeContent', 'subtree', 'maxFiles'];
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleFrontendInsights({
-          projectPath: globalOptions.projectPath || detectProjectPath(),
+          projectPath: globalOptions.projectPath || await detectProjectPath(),
           format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
@@ -1088,7 +1117,7 @@ async function executeToolCommand(
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleLocalDebugContext({
           logText,
-          projectPath: globalOptions.projectPath || detectProjectPath(),
+          projectPath: globalOptions.projectPath || await detectProjectPath(),
           format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
@@ -1164,7 +1193,7 @@ async function executeToolCommand(
         }
 
         const grepArgs: Record<string, unknown> = {
-          projectPath: globalOptions.projectPath || detectProjectPath(),
+          projectPath: globalOptions.projectPath || await detectProjectPath(),
           ...parsedArgs,
         };
         if (pattern) {
@@ -1231,9 +1260,8 @@ async function executeToolCommand(
         } catch (parseError) {
           exitWithError({
             command: 'compare',
-            message: `Error parsing models: ${
-              parseError instanceof Error ? parseError.message : String(parseError)
-            }`,
+            message: `Error parsing models: ${parseError instanceof Error ? parseError.message : String(parseError)
+              }`,
             options: globalOptions,
             exitCode: EXIT_CODES.USAGE_ERROR,
           });
@@ -1272,7 +1300,7 @@ async function executeToolCommand(
       case 'doctor': {
         const { runDoctor } = await import('./runtime/doctor');
         result = await runDoctor({
-          detectedProjectPath: globalOptions.projectPath || detectProjectPath(),
+          detectedProjectPath: globalOptions.projectPath || await detectProjectPath(),
         });
         break;
       }
@@ -1303,16 +1331,16 @@ async function executeToolCommand(
           const workflowFiles =
             fs.existsSync(workflowsDir) && fs.statSync(workflowsDir).isDirectory()
               ? fs
-                  .readdirSync(workflowsDir)
-                  .filter(f => f.endsWith('.json'))
-                  .sort()
+                .readdirSync(workflowsDir)
+                .filter(f => f.endsWith('.json'))
+                .sort()
               : [];
           const recipeFiles =
             fs.existsSync(recipesDir) && fs.statSync(recipesDir).isDirectory()
               ? fs
-                  .readdirSync(recipesDir)
-                  .filter(f => f.endsWith('.json'))
-                  .sort()
+                .readdirSync(recipesDir)
+                .filter(f => f.endsWith('.json'))
+                .sort()
               : [];
 
           if (subcommand === 'list') {
@@ -1406,7 +1434,7 @@ async function executeToolCommand(
 
         const { runSkillVerify } = await import('./runtime/skill/verify');
         const report = await runSkillVerify({
-          detectedProjectPath: globalOptions.projectPath || detectProjectPath(),
+          detectedProjectPath: globalOptions.projectPath || await detectProjectPath(),
           availableCommands: commands,
         });
         result = report;
@@ -1456,7 +1484,7 @@ async function executeToolCommand(
           'id',
         ]);
 
-        const projectPath = globalOptions.projectPath || detectProjectPath();
+        const projectPath = globalOptions.projectPath || await detectProjectPath();
         const packsDir = typeof parsed.packsDir === 'string' ? parsed.packsDir : undefined;
         const resolvedIdentifier =
           (typeof parsed.id === 'string' && parsed.id.length > 0 ? parsed.id : undefined) ||
@@ -1784,7 +1812,7 @@ async function executeToolCommand(
 
         // Special handling for check_stale - show project path and confirm if autoUpdate
         if (action === 'check_stale') {
-          const projectPath = globalOptions.projectPath || detectProjectPath();
+          const projectPath = globalOptions.projectPath || await detectProjectPath();
 
           if (!isJsonMode(globalOptions)) {
             // Always show which project is being checked
@@ -1838,7 +1866,7 @@ async function executeToolCommand(
 
         result = await handleManageEmbeddings({
           action,
-          projectPath: globalOptions.projectPath || detectProjectPath(),
+          projectPath: globalOptions.projectPath || await detectProjectPath(),
           projectIdentifier,
           ...mergedArgs,
         });
@@ -1868,7 +1896,7 @@ async function executeToolCommand(
         }
 
         result = await handler({
-          path: globalOptions.projectPath || detectProjectPath(),
+          path: globalOptions.projectPath || await detectProjectPath(),
           ...parseToolSpecificArgs(toolArgs, ['path', 'force', 'skipCloud', 'pattern']),
         });
         break;
@@ -1894,20 +1922,29 @@ async function executeToolCommand(
       }
     }
 
-    // Handle output
     const output = formatToolOutput(result, globalOptions);
+
+    if (globalOptions.copy) {
+      try {
+        const clipboardy = await import('clipboardy');
+        clipboardy.default.writeSync(output);
+        console.error('📋 Copied to clipboard!');
+      } catch (err) {
+        console.error(`⚠️ Failed to copy to clipboard: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     if (globalOptions.output) {
       require('fs').writeFileSync(globalOptions.output, output);
       console.error(`Output written to ${globalOptions.output}`);
-    } else {
+    } else if (!globalOptions.copy) {
       console.log(output);
     }
   } catch (error) {
     exitWithError({
       command,
-      message: `Error executing ${command} command: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      message: `Error executing ${command} command: ${error instanceof Error ? error.message : String(error)
+        }`,
       options: globalOptions,
       exitCode: EXIT_CODES.RUNTIME_ERROR,
     });

@@ -100,7 +100,7 @@ export class Logger {
   }
 
   private shouldLog(level: string): boolean {
-    const logLevel = process.env.LOG_LEVEL?.toLowerCase() || 'info';
+    const logLevel = process.env.LOG_LEVEL?.toLowerCase() || 'warn';
     if (['silent', 'off', 'none'].includes(logLevel)) {
       return false;
     }

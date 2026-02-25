@@ -94,19 +94,13 @@ export function resolveWorkspacePath(inputPath?: string): string {
 }
 
 /**
- * Detect workspace directory from environment or current directory with smart project detection
+ * Detect workspace directory from current directory with smart project detection,
+ * falling back to environment variable if no project structure is found.
  */
 export function detectWorkspaceDirectory(): string {
-  // First check environment variable - trust user's workspace setting even if it doesn't look like project root
-  const workspaceFolder = process.env.WORKSPACE_FOLDER;
-  if (workspaceFolder && fs.existsSync(workspaceFolder)) {
-    const { logger } = require('../../utils/logger');
-    logger.info('Using configured workspace folder', { workspace: workspaceFolder });
-    return workspaceFolder;
-  }
-
-  // Check current working directory
   const cwd = process.cwd();
+
+  // First, check current working directory
   if (hasProjectStructure(cwd)) {
     return cwd;
   }
@@ -126,6 +120,14 @@ export function detectWorkspaceDirectory(): string {
       break;
     }
     currentDir = parentDir;
+  }
+
+  // If no project root is found by traversing up, fallback to workspace env var
+  const workspaceFolder = process.env.WORKSPACE_FOLDER;
+  if (workspaceFolder && fs.existsSync(workspaceFolder)) {
+    const { logger } = require('../../utils/logger');
+    logger.info('Using configured workspace folder as fallback', { workspace: workspaceFolder });
+    return workspaceFolder;
   }
 
   // If we still haven't found a project, check if current directory looks suspicious
