@@ -16,11 +16,11 @@ export function calculateCyclomaticComplexity(code: string): {
   description: string;
   breakdown: Record<string, number>;
 } {
-  // Remove comments and strings to avoid false positives
   const cleanCode = code
     .replace(/\/\*[\s\S]*?\*\//g, '') // Remove block comments
     .replace(/\/\/.*$/gm, '') // Remove line comments
-    .replace(/['`](?:[^'`\\]|\\.)*['`]/g, '') // Remove template literals and strings
+    .replace(/`(?:[^`\\]|\\.)*`/g, '') // Remove template literals
+    .replace(/'(?:[^'\\]|\\.)*'/g, '') // Remove single-quoted strings
     .replace(/"(?:[^"\\]|\\.)*"/g, ''); // Remove double-quoted strings
 
   // Count decision points that add to cyclomatic complexity

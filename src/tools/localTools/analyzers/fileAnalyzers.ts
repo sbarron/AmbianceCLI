@@ -94,9 +94,14 @@ export async function extractFileHeader(filePath: string): Promise<{
 
     // Fallback: return first 15 lines as code context
     const contextLines = lines.slice(0, 15);
+    let fallbackContent = contextLines.join('\n');
+    if (fallbackContent.length > 1000) {
+      fallbackContent = fallbackContent.substring(0, 1000) + '\n... (truncated due to length)';
+    }
+
     return {
       type: 'code',
-      content: contextLines.join('\n'),
+      content: fallbackContent,
       lineCount: contextLines.length,
     };
   } catch (error) {
@@ -260,10 +265,10 @@ export async function analyzeJsonFile(
       hasNesting: jsonInfo.depth > 1,
       dataTypes: jsonInfo.nestedStructure
         ? Object.entries(jsonInfo.nestedStructure).map(([key, info]: [string, any]) => ({
-            key,
-            type: info.type,
-            depth: info.depth,
-          }))
+          key,
+          type: info.type,
+          depth: info.depth,
+        }))
         : [],
       depth: jsonInfo.depth,
       configType: jsonInfo.configType,

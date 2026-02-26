@@ -246,6 +246,7 @@ export async function handleFileSummary(args: any): Promise<any> {
       exportedSymbols: astAnalysis.exportedSymbols,
       allClasses: astAnalysis.allClasses, // 🔑 Add class information
       allInterfaces: astAnalysis.allInterfaces, // 🔑 Add interface information
+      allVariables: astAnalysis.allVariables, // 🔑 Add variable information
       symbols: includeSymbols
         ? astAnalysis.topSymbols.slice(0, maxSymbols) // 🔑 Use better symbol selection
         : [],
@@ -419,6 +420,7 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
   allFunctions: any[];
   allClasses: any[];
   allInterfaces: any[];
+  allVariables: any[];
   exportedSymbols: string[];
   topSymbols: any[];
 }> {
@@ -452,6 +454,7 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
     let allFunctions: any[] = [];
     let allClasses: any[] = [];
     const allInterfaces: any[] = [];
+    const allVariables: any[] = [];
     let exportedSymbols: string[] = [];
 
     // Existing JS/TS/Python processing
@@ -494,11 +497,11 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
           methods:
             symbol.body && symbol.body.startsWith('Methods:')
               ? symbol.body
-                  .replace('Methods:', '')
-                  .trim()
-                  .split(',')
-                  .map(m => m.trim())
-                  .filter(m => m && m !== 'constructor')
+                .replace('Methods:', '')
+                .trim()
+                .split(',')
+                .map(m => m.trim())
+                .filter(m => m && m !== 'constructor')
               : [],
         });
       } else if (symbol.type === 'interface') {
@@ -507,6 +510,14 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
           line: symbol.startLine,
           signature: resolveTypeFromAST(symbol.signature),
           purpose: 'Type definition',
+        });
+      } else if (symbol.type === 'variable') {
+        allVariables.push({
+          name: symbol.name,
+          line: symbol.startLine,
+          signature: resolveTypeFromAST(symbol.signature),
+          purpose: 'Variable',
+          isExported: symbol.isExported,
         });
       }
 
@@ -592,6 +603,21 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
       });
     });
 
+    // Add key variables (exported first)
+    const keyVariables = allVariables
+      .sort((a, b) => (b.isExported ? 1 : 0) - (a.isExported ? 1 : 0))
+      .slice(0, 5);
+
+    keyVariables.forEach(v => {
+      topSymbols.push({
+        name: v.name,
+        type: 'variable',
+        line: v.line,
+        purpose: v.purpose,
+        signature: v.signature.substring(0, 100) + (v.signature.length > 100 ? '...' : ''),
+      });
+    });
+
     parser.dispose();
 
     return {
@@ -599,6 +625,7 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
       allFunctions,
       allClasses,
       allInterfaces,
+      allVariables,
       exportedSymbols,
       topSymbols,
     };
@@ -612,6 +639,7 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
       allFunctions: [],
       allClasses: [],
       allInterfaces: [],
+      allVariables: [],
       exportedSymbols: [],
       topSymbols: [],
     };

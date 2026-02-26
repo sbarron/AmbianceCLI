@@ -325,11 +325,12 @@ export class ASTParser {
               body: self.extractFunctionBody(func),
             });
           } else if (t.isIdentifier(node.id)) {
-            // Regular variables - only chunk if they're architecturally significant
+            // Regular variables - only chunk if they're architecturally significant or exported
             const signature = `${node.id.name}: ${self.inferType(node.init)}`;
             const docstring = self.extractLeadingComments(path);
+            const isExported = self.isExported(path.parentPath);
 
-            if (self.shouldChunkVariable(node.id.name, signature, docstring)) {
+            if (isExported || self.shouldChunkVariable(node.id.name, signature, docstring)) {
               symbols.push({
                 name: node.id.name,
                 type: 'variable',
@@ -337,7 +338,7 @@ export class ASTParser {
                 startLine: node.loc?.start.line || 1,
                 endLine: node.loc?.end.line || 1,
                 docstring,
-                isExported: self.isExported(path.parentPath),
+                isExported,
               });
             }
           }
@@ -818,7 +819,22 @@ export class ASTParser {
 
   private inferType(node: any): string {
     if (!node) return 'unknown';
-    if (t.isStringLiteral(node)) return 'string';
+    if (t.isStringLiteral(node)) {
+      const lines = node.value.split('\n').length;
+      if (lines > 1) return `string (${lines} lines)`;
+      if (node.value.length > 50) return `string (${node.value.length} chars)`;
+      return 'string';
+    }
+    if (t.isTemplateLiteral(node)) {
+      let text = '';
+      if (node.quasis) {
+        node.quasis.forEach((q: any) => { text += q.value?.raw || ''; });
+      }
+      const lines = text.split('\n').length;
+      if (lines > 1) return `template string (${lines} lines)`;
+      if (text.length > 50) return `template string (${text.length} chars)`;
+      return 'template string';
+    }
     if (t.isNumericLiteral(node)) return 'number';
     if (t.isBooleanLiteral(node)) return 'boolean';
     if (t.isArrayExpression(node)) return 'array';

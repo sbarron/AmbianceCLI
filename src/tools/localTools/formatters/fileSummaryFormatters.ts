@@ -48,8 +48,8 @@ export function formatFileSummaryAsXML(summary: any, quickAnalysis: string): str
     summary.allFunctions && summary.allFunctions.length > 0
       ? `  <functions>
     ${summary.allFunctions
-      .map(
-        (func: any) => `
+        .map(
+          (func: any) => `
     <function>
       <name>${escapeXml(func.name)}</name>
       <line>${func.line}</line>
@@ -58,8 +58,8 @@ export function formatFileSummaryAsXML(summary: any, quickAnalysis: string): str
       <parameter_count>${func.parameters.length}</parameter_count>
       <signature>${escapeXml(func.signature)}</signature>
     </function>`
-      )
-      .join('')}
+        )
+        .join('')}
   </functions>`
       : '';
 
@@ -72,15 +72,14 @@ export function formatFileSummaryAsXML(summary: any, quickAnalysis: string): str
     <complexity>${summary.complexity}</complexity>
     <symbol_count>${summary.symbolCount}</symbol_count>
     <function_count>${summary.allFunctions ? summary.allFunctions.length : 0}</function_count>
-    ${
-      summary.complexityData
-        ? `<cyclomatic_complexity>
+    ${summary.complexityData
+      ? `<cyclomatic_complexity>
       <total>${summary.complexityData.totalComplexity}</total>
       <decision_points>${summary.complexityData.decisionPoints}</decision_points>
       <rating>${summary.complexityData.rating}</rating>
       <description><![CDATA[${summary.complexityData.description}]]></description>
     </cyclomatic_complexity>`
-        : ''
+      : ''
     }
   </metadata>
   <quick_analysis>${escapeXml(quickAnalysis)}</quick_analysis>${headerXml}${functionsXml}
@@ -136,6 +135,20 @@ export function formatFileSummaryAsStructured(summary: any, quickAnalysis: strin
       }
     });
     output += '\n';
+  }
+
+  if (summary.allVariables && summary.allVariables.length > 0) {
+    const exportedVars = summary.allVariables.filter((v: any) => v.isExported);
+    if (exportedVars.length > 0) {
+      output += `## Exported Variables (${exportedVars.length})\n\n`;
+      exportedVars.slice(0, 10).forEach((v: any) => {
+        output += `- **${v.name}** (line ${v.line})\n`;
+        if (v.signature) {
+          output += `  \`${v.signature.substring(0, 80)}${v.signature.length > 80 ? '...' : ''}\`\n`;
+        }
+      });
+      output += '\n';
+    }
   }
 
   if (summary.complexityData) {
@@ -253,9 +266,7 @@ export function generateQuickFileAnalysis(summary: any): string {
   else if (hasInterface) pattern = 'Interface-driven';
   else if (hasAsync) pattern = 'Async/functional';
   else if (isExportHeavy) pattern = 'Module/library';
-  else pattern = 'Utility';
-
-  return `${fileName} (${language}): ${symbolCount} symbols, ${complexity} complexity, ${pattern} pattern. Key: ${topSymbols || 'Analysis in progress'}`;
+  return `${fileName} (${language}): ${symbolCount} symbols, ${complexity} complexity, ${pattern} pattern. Key: ${topSymbols || 'None'}`;
 }
 
 /**
