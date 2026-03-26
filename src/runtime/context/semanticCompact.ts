@@ -88,273 +88,124 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       // Validate and resolve project path (now required)
       const resolvedProjectPath = validateAndResolvePath(projectPath);
 
-      // Automatic embedding sync when enabled
-      const shouldPerformAutoSync = autoSync || false; // Keep explicit flag for now
-      const { shouldAutoSync: checkAutoSync, isAutoSyncEnabled } = await import(
-        '../../local/autoSyncManager'
-      );
+      // ──────────────────────────────────────────────────────────────────
+      // Embedding lifecycle: ALWAYS ensure embeddings exist & are fresh
+      // before running any context query.  This runs regardless of flags.
+      // ──────────────────────────────────────────────────────────────────
+      const embeddingsEnabled = process.env.USE_LOCAL_EMBEDDINGS === 'true' || useEmbeddings;
 
-      // Determine if we should sync: explicit flag OR automatic check
-      let performSync = shouldPerformAutoSync;
-      let autoSyncReason = '';
-
-      if (!performSync && isAutoSyncEnabled()) {
-        // Check if automatic sync is needed
-        try {
-          const { ProjectIdentifier } = await import('../../local/projectIdentifier');
-          const projectInfo =
-            await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
-          const projectId = projectInfo.id;
-          const syncCheck = await checkAutoSync(projectId);
-
-          if (syncCheck.shouldSync) {
-            performSync = true;
-            autoSyncReason = syncCheck.reason || 'Automatic sync triggered';
-            logger.info('🔄 Auto-sync triggered', {
-              projectPath: resolvedProjectPath,
-              reason: autoSyncReason,
-              timeSinceLastSync: syncCheck.timeSinceLastSync
-                ? `${Math.round(syncCheck.timeSinceLastSync / 1000)}s`
-                : 'unknown',
-            });
-          }
-        } catch (error) {
-          logger.debug('Auto-sync check failed', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      if (performSync) {
+      if (embeddingsEnabled) {
         try {
           const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+
           if (LocalEmbeddingStorage.isEnabled()) {
             const { checkStaleFiles, createProjectEmbeddings } = await import(
               '../embeddings/manageEmbeddings'
             );
-            const { recordSync } = await import('../../local/autoSyncManager');
+            const { recordSync, shouldAutoSync: checkAutoSync } = await import(
+              '../../local/autoSyncManager'
+            );
             const { ProjectIdentifier } = await import('../../local/projectIdentifier');
+
+            const storage = new LocalEmbeddingStorage();
+            const projectInfo =
+              await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+            const projectId = projectInfo.id;
 
             const normalizedBatchSize =
               typeof autoSyncBatchSize === 'number' && Number.isFinite(autoSyncBatchSize)
                 ? Math.max(1, Math.min(Math.floor(autoSyncBatchSize), 100))
                 : 10;
 
-            const syncResult = await checkStaleFiles({
-              projectPath: resolvedProjectPath,
-              autoUpdate: true,
-              batchSize: normalizedBatchSize,
-            });
+            // Step 1: Check if any embeddings exist at all
+            const stats = await storage.getProjectStats(projectId);
+            const hasEmbeddings = stats && stats.totalChunks > 0;
 
-            if ((syncResult?.totalFiles ?? 0) === 0 && generateEmbeddingsIfMissing !== false) {
-              logger.info('🧱 Context auto-sync found no tracked embeddings; bootstrapping now', {
+            if (!hasEmbeddings && generateEmbeddingsIfMissing !== false) {
+              // No embeddings at all — bootstrap them now (blocking)
+              logger.info('🧱 No embeddings found for project; creating now before context query', {
                 projectPath: resolvedProjectPath,
+                projectId,
               });
               await createProjectEmbeddings({
                 projectPath: resolvedProjectPath,
                 batchSize: normalizedBatchSize,
               });
+              await recordSync(projectId);
+              logger.info('✅ Initial embeddings created', { projectPath: resolvedProjectPath });
+            } else if (hasEmbeddings) {
+              // Step 2: Embeddings exist — check staleness and update if needed
+              // Always check, not just when autoSync flag or EMBEDDING_AUTO_SYNC env is set
+              let needsSync = autoSync; // explicit flag always triggers sync
+              let syncReason = autoSync ? 'Explicit --auto-sync flag' : '';
+
+              if (!needsSync) {
+                try {
+                  const syncCheck = await checkAutoSync(projectId);
+                  if (syncCheck.shouldSync) {
+                    needsSync = true;
+                    syncReason = syncCheck.reason || 'Stale embeddings detected';
+                    logger.info('🔄 Stale embeddings detected; updating before context query', {
+                      projectPath: resolvedProjectPath,
+                      reason: syncReason,
+                      timeSinceLastSync: syncCheck.timeSinceLastSync
+                        ? `${Math.round(syncCheck.timeSinceLastSync / 1000)}s`
+                        : 'unknown',
+                    });
+                  }
+                } catch (error) {
+                  logger.debug('Staleness check failed; proceeding with existing embeddings', {
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                }
+              }
+
+              if (needsSync) {
+                const syncResult = await checkStaleFiles({
+                  projectPath: resolvedProjectPath,
+                  autoUpdate: true,
+                  batchSize: normalizedBatchSize,
+                });
+                await recordSync(projectId);
+                logger.info('✅ Embedding sync completed before context query', {
+                  projectPath: resolvedProjectPath,
+                  reason: syncReason,
+                  staleCount: syncResult?.staleCount ?? 0,
+                  updated: syncResult?.updateResult?.updated ?? false,
+                  processedFiles: syncResult?.updateResult?.result?.processedFiles ?? 0,
+                  embeddings: syncResult?.updateResult?.result?.embeddings ?? 0,
+                });
+              }
             }
-
-            // Record successful sync
-            const projectInfo =
-              await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
-            await recordSync(projectInfo.id);
-
-            logger.info('✅ Context auto-sync completed', {
-              projectPath: resolvedProjectPath,
-              reason: autoSyncReason || 'Explicit sync requested',
-              staleCount: syncResult?.staleCount ?? 0,
-              updated: syncResult?.updateResult?.updated ?? false,
-              processedFiles: syncResult?.updateResult?.result?.processedFiles ?? 0,
-              embeddings: syncResult?.updateResult?.result?.embeddings ?? 0,
-            });
-          } else {
-            logger.info('ℹ️ Context auto-sync skipped (local embeddings disabled)', {
-              projectPath: resolvedProjectPath,
-            });
           }
         } catch (syncError) {
-          logger.warn('⚠️ Context auto-sync failed; continuing with context generation', {
+          logger.warn('⚠️ Embedding sync failed; continuing with context generation', {
             projectPath: resolvedProjectPath,
             error: syncError instanceof Error ? syncError.message : String(syncError),
           });
         }
       }
 
-      // Enhanced mode: Use new local_context implementation if query is provided
-      if (
-        query &&
-        (format === 'enhanced' || format === 'system-map' || format === 'index') &&
-        !folderPath
-      ) {
-        // Auto-enable embeddings when local storage is enabled and we have a query
-        const localStorageEnabled = process.env.USE_LOCAL_EMBEDDINGS === 'true';
-        const enhancedAvailable = EnhancedSemanticCompactor.isEnhancedModeAvailable();
-
-        if (localStorageEnabled && enhancedAvailable) {
-          try {
-            logger.info('🧠 Auto-enabled embeddings (local storage active)', {
-              projectPath: resolvedProjectPath,
-              threshold: embeddingSimilarityThreshold,
-              maxChunks: maxSimilarChunks,
-            });
-
-            // Query-scoped file selection via quick AST pre-pass
-            let filePatterns: string[] | undefined;
-            try {
-              const { localContext } = await import('../../tools/localTools/enhancedLocalContext');
-              const prepass = await localContext({
-                projectPath: resolvedProjectPath,
-                query,
-                taskType: taskType as any,
-                maxSimilarChunks: Math.max(10, maxSimilarChunks),
-                maxTokens: Math.min(1500, maxTokens),
-                useProjectHintsCache,
-                attackPlan: attackPlan as any,
-                excludePatterns,
-              });
-
-              if (prepass?.jumpTargets?.length) {
-                const uniqueFiles = Array.from(
-                  new Set(prepass.jumpTargets.map((t: any) => t.file).filter(Boolean))
-                );
-                filePatterns = uniqueFiles.map((absOrRel: string) => {
-                  const rel = path.isAbsolute(absOrRel)
-                    ? path.relative(resolvedProjectPath, absOrRel)
-                    : absOrRel;
-                  // Use exact file paths as patterns
-                  return rel.replace(/\\/g, '/');
-                });
-                logger.info('🗂️ Query-scoped embedding file set prepared', {
-                  files: filePatterns.slice(0, 10),
-                  total: filePatterns.length,
-                });
-              }
-            } catch (preErr) {
-              logger.warn('⚠️ Query-scoped pre-pass failed; proceeding without scoped patterns', {
-                error: preErr instanceof Error ? preErr.message : String(preErr),
-              });
-            }
-
-            const enhancedResult = await enhancedSemanticCompactor.generateEnhancedContext({
-              projectPath: resolvedProjectPath,
-              maxTokens,
-              query,
-              taskType,
-              format,
-              useEmbeddings: true,
-              embeddingSimilarityThreshold,
-              maxSimilarChunks,
-              // Default to generating embeddings on first run unless explicitly disabled
-              generateEmbeddingsIfMissing: generateEmbeddingsIfMissing !== false,
-              embeddingOptions: {
-                batchSize: 48,
-                rateLimit: 0,
-                maxChunkSize: 1800,
-                filePatterns,
-              },
-              excludePatterns,
-            });
-
-            // Enforce final token cap on returned content
-            const cappedContent = truncateToTokens(enhancedResult.content, maxTokens);
-            const cappedTokens = estimateTokensShared(cappedContent);
-            return {
-              success: true,
-              compactedContent: cappedContent,
-              metadata: {
-                originalTokens: Math.round(
-                  (enhancedResult.metadata.tokenCount || 0) /
-                  (enhancedResult.metadata.compressionRatio || 1)
-                ),
-                compactedTokens: cappedTokens,
-                compressionRatio: enhancedResult.metadata.compressionRatio || 1,
-                filesProcessed: enhancedResult.metadata.includedFiles || 0,
-                symbolsFound: 0,
-                symbolsAfterCompaction: 0,
-                processingTimeMs: 0,
-                format,
-                embeddingsUsed: enhancedResult.metadata.embeddingsUsed,
-                similarChunksFound: enhancedResult.metadata.similarChunksFound,
-              },
-              usage: `Enhanced context with ${enhancedResult.metadata.embeddingsUsed ? 'embeddings' : 'base compaction'}: ${cappedTokens} tokens (cap=${maxTokens})`,
-            };
-          } catch (error) {
-            logger.warn('⚠️ Auto-embedding path failed, falling back to enhanced AST mode', {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-
-        logger.info('🚀 Using enhanced local context mode', {
-          query,
-          taskType,
-          attackPlan,
-          maxTokens,
-          maxSimilarChunks,
-        });
-
-        try {
-          const { localContext } = await import('../../tools/localTools/enhancedLocalContext');
-
-          const enhancedResult = await localContext({
-            projectPath: resolvedProjectPath,
-            query,
-            taskType: taskType as any,
-            maxSimilarChunks,
-            maxTokens,
-            generateEmbeddingsIfMissing,
-            useProjectHintsCache,
-            astQueries,
-            attackPlan: attackPlan as any,
-            excludePatterns,
-          });
-
-          if (enhancedResult.success) {
-            return {
-              success: true,
-              compactedContent: formatEnhancedContextOutput(enhancedResult, query, maxTokens, format),
-              ...(showmetadata ? { metadata: enhancedResult.metadata } : {}),
-              usage: `Enhanced context analysis: ${enhancedResult.metadata.bundleTokens} tokens in ${enhancedResult.jumpTargets.length} locations`,
-              enhanced: true,
-              jumpTargets: enhancedResult.jumpTargets,
-              byFile: enhancedResult.byFile,
-              answerDraft: enhancedResult.answerDraft,
-              nextActions: enhancedResult.next,
-              evidence: enhancedResult.evidence,
-              ...(showmetadata ? { llmBundle: enhancedResult.llmBundle } : {}),
-            };
-          } else {
-            // Fall back to legacy mode if enhanced mode fails
-            logger.warn('Enhanced mode failed, falling back to legacy mode');
-          }
-        } catch (error) {
-          logger.warn('⚠️ Enhanced local context failed, using legacy mode', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-
-        // System Map mode: Use shared retriever to build architecture overview
+      // ──────────────────────────────────────────────────────────────────
+      // Unified pipeline: always use enhanced local context when query is
+      // provided.  Embeddings enhance ranking when available.
+      // ──────────────────────────────────────────────────────────────────
+      if (query && !folderPath) {
+        // System Map is its own specialized format
         if (format === 'system-map') {
           try {
             logger.info('🗺️ Using System Map format', { query });
 
-            // Use shared retriever to get relevant chunks
             const relevantChunks = await sharedRetriever.retrieve(query, 'overview');
-
-            // Compose System Map
             const systemMap = await systemMapComposer.composeSystemMap(query, relevantChunks);
-
-            // Format as markdown
             const systemMapMarkdown = formatSystemMapAsMarkdown(systemMap);
-
-            // Estimate tokens and return
             const tokenCount = estimateTokensShared(systemMapMarkdown);
+            const content = truncateToTokens(systemMapMarkdown, maxTokens);
 
             return {
               success: true,
-              compactedContent: truncateToTokens(systemMapMarkdown, maxTokens),
+              content,
+              compactedContent: content,
               metadata: {
                 originalTokens: tokenCount,
                 compactedTokens: Math.min(tokenCount, maxTokens),
@@ -376,88 +227,127 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             });
           }
         }
+
+        // Resolve embedding similarity scores to feed into ranking
+        let embeddingScores: Map<string, number> | undefined;
+        let embeddingsUsed = false;
+
+        const enhancedAvailable = EnhancedSemanticCompactor.isEnhancedModeAvailable();
+
+        if (embeddingsEnabled && enhancedAvailable) {
+          try {
+            const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+            const { embeddingGenerator } = await import('../../local/embeddingGenerator');
+            const { ProjectIdentifier } = await import('../../local/projectIdentifier');
+
+            if (LocalEmbeddingStorage.isEnabled()) {
+              const storage = new LocalEmbeddingStorage();
+              const projectInfo = await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+              const projectId = projectInfo.id;
+
+              // Embeddings were ensured above; now query them
+              const stats = await storage.getProjectStats(projectId);
+              if (stats && stats.totalChunks > 0) {
+                const queryEmbedding = await embeddingGenerator.generateQueryEmbedding(query, projectId);
+                const similarChunks = await storage.searchSimilarEmbeddings(
+                  projectId,
+                  queryEmbedding,
+                  Math.max(maxSimilarChunks, 30),
+                  0.0 // Get all, we'll use similarity as a score
+                );
+
+                if (similarChunks.length > 0) {
+                  embeddingScores = new Map();
+                  for (const sc of similarChunks) {
+                    const filePath = sc.chunk.filePath;
+                    // Aggregate: keep max similarity per file
+                    const existing = embeddingScores.get(filePath) || 0;
+                    if (sc.similarity > existing) {
+                      embeddingScores.set(filePath, sc.similarity);
+                    }
+                  }
+                  embeddingsUsed = true;
+                  logger.info('🧠 Embedding scores resolved for ranking', {
+                    filesWithScores: embeddingScores.size,
+                    topScore: Math.max(...embeddingScores.values()),
+                    chunks: similarChunks.length,
+                  });
+                }
+              }
+            }
+          } catch (error) {
+            logger.warn('⚠️ Embedding lookup failed; proceeding without embedding scores', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        logger.info('🚀 Using enhanced local context mode', {
+          query,
+          taskType,
+          attackPlan,
+          maxTokens,
+          maxSimilarChunks,
+          embeddingsUsed,
+        });
+
+        try {
+          const { localContext } = await import('../../tools/localTools/enhancedLocalContext');
+
+          const enhancedResult = await localContext({
+            projectPath: resolvedProjectPath,
+            query,
+            taskType: taskType as any,
+            maxSimilarChunks,
+            maxTokens,
+            generateEmbeddingsIfMissing,
+            useProjectHintsCache,
+            astQueries,
+            attackPlan: attackPlan as any,
+            excludePatterns,
+            embeddingScores,
+          });
+
+          if (enhancedResult.success) {
+            const content = formatEnhancedContextOutput(enhancedResult, query, maxTokens, format);
+            return {
+              success: true,
+              content,
+              compactedContent: content,
+              ...(showmetadata ? { metadata: enhancedResult.metadata } : {}),
+              usage: `Enhanced context analysis: ${enhancedResult.metadata.bundleTokens} tokens in ${enhancedResult.jumpTargets.length} locations${embeddingsUsed ? ' (embedding-enhanced)' : ''}`,
+              enhanced: true,
+              embeddingsUsed,
+              jumpTargets: enhancedResult.jumpTargets,
+              byFile: enhancedResult.byFile,
+              answerDraft: enhancedResult.answerDraft,
+              nextActions: enhancedResult.next,
+              evidence: enhancedResult.evidence,
+              ...(showmetadata ? { llmBundle: enhancedResult.llmBundle } : {}),
+            };
+          } else {
+            logger.warn('Enhanced mode failed, falling back to legacy mode');
+          }
+        } catch (error) {
+          logger.warn('⚠️ Enhanced local context failed, using legacy mode', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
-      // resolvedProjectPath is already computed above
-
-      logger.info('🔧 Starting local semantic compaction', {
+      // Legacy fallback: folder-specific analysis or no query provided
+      logger.info('🔧 Starting local semantic compaction (legacy fallback)', {
         originalPath: projectPath,
         resolvedPath: resolvedProjectPath,
         folderPath,
         maxTokens,
         taskType,
-        useEmbeddings,
-        enhancedModeAvailable: EnhancedSemanticCompactor.isEnhancedModeAvailable(),
       });
 
       try {
-        // Check if we should use enhanced compactor with embeddings
-        const canUseEmbeddings =
-          useEmbeddings &&
-          query &&
-          !folderPath && // Don't use embeddings for folder-specific analysis yet
-          EnhancedSemanticCompactor.isEnhancedModeAvailable();
-
-        if (canUseEmbeddings) {
-          logger.info('🚀 Using enhanced semantic compactor with embeddings', {
-            query,
-            threshold: embeddingSimilarityThreshold,
-            maxChunks: maxSimilarChunks,
-          });
-
-          logger.debug('🔧 Calling enhanced semantic compactor with embeddings');
-
-          const enhancedResult = await enhancedSemanticCompactor.generateEnhancedContext({
-            projectPath: resolvedProjectPath,
-            maxTokens,
-            query,
-            taskType,
-            format,
-            useEmbeddings: true,
-            embeddingSimilarityThreshold,
-            maxSimilarChunks,
-            generateEmbeddingsIfMissing,
-            excludePatterns,
-          });
-
-          logger.debug('📊 Enhanced compactor result', {
-            contentLength: enhancedResult.content?.length || 0,
-            metadata: enhancedResult.metadata,
-            metadataKeys: Object.keys(enhancedResult.metadata || {}),
-          });
-
-          // Return properly structured response for enhanced path
-          const cappedContent = truncateToTokens(enhancedResult.content, maxTokens);
-          const cappedTokens = estimateTokensShared(cappedContent);
-          return {
-            success: true,
-            compactedContent: cappedContent,
-            ...(showmetadata ? {
-              metadata: {
-                originalTokens: Math.round(
-                  (enhancedResult.metadata.tokenCount || 0) /
-                  (enhancedResult.metadata.compressionRatio || 1)
-                ),
-                compactedTokens: cappedTokens,
-                compressionRatio: enhancedResult.metadata.compressionRatio || 1,
-                filesProcessed: enhancedResult.metadata.includedFiles || 0,
-                symbolsFound: 0, // Enhanced compactor doesn't track symbols the same way
-                symbolsAfterCompaction: 0, // Enhanced compactor doesn't track symbols the same way
-                processingTimeMs: 0, // Could add timing to enhanced compactor
-                format,
-                embeddingsUsed: enhancedResult.metadata.embeddingsUsed,
-                similarChunksFound: enhancedResult.metadata.similarChunksFound,
-              },
-            } : {}),
-            usage: `Enhanced context with ${enhancedResult.metadata.embeddingsUsed ? 'embeddings' : 'base compaction'}: ${cappedTokens} tokens (cap=${maxTokens})`,
-          };
-        }
-
         // Fall back to standard semantic compaction
         logger.info('📝 Using standard semantic compaction', {
-          reason: !canUseEmbeddings
-            ? 'Enhanced mode not available or not requested'
-            : 'Folder-specific analysis',
+          reason: folderPath ? 'Folder-specific analysis' : 'No query provided or enhanced mode unavailable',
         });
         // Handle folder-specific analysis if folderPath is provided, or general analysis with exclude patterns
         let analysisPath = resolvedProjectPath;
@@ -641,6 +531,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         const finalTokens = estimateTokensShared(formattedContent);
         return {
           success: true,
+          content: formattedContent,
           compactedContent: formattedContent,
           ...(showmetadata ? { metadata: responseMetadata } : {}),
           usage: `Reduced context from ${originalTokens} to ${finalTokens} tokens (${Math.round(((result as any).compressionRatio || 1) * 100)}% compression, cap=${maxTokens})`,

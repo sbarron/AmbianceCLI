@@ -165,7 +165,7 @@ async function loadProjectIgnorePatterns(projectPath: string): Promise<IgnorePat
 /**
  * Analyze what files should be indexed using the same logic as the embedding indexer
  */
-async function analyzeProjectIndexableFiles(projectPath: string): Promise<{
+export async function analyzeProjectIndexableFiles(projectPath: string): Promise<{
   totalFiles: number;
   excludedFiles: number;
   indexableFiles: number;

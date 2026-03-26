@@ -488,7 +488,9 @@ function generateVerificationChecks(targets: JumpTarget[], indices: any): string
 // ===== FALLBACK AND UTILITIES =====
 
 /**
- * Generate fallback answer when no template is available
+ * Generate fallback answer when no template is available.
+ * Uses jump target roles and context to describe what was found,
+ * rather than just listing names.
  */
 function generateFallbackAnswer(
   plan: string,
@@ -497,19 +499,63 @@ function generateFallbackAnswer(
   query?: string
 ): string {
   const fileCount = new Set(targets.map(t => t.file)).size;
-  const symbolCount = targets.length;
-  const topFiles = [...new Set(targets.slice(0, 3).map(t => getRelativePath(t.file)))];
-  const topSymbols = targets.slice(0, 3).map(t => t.symbol);
 
-  let answer = `Analysis for "${query || 'your request'}" (${plan} pattern, ${taskType} task) `;
-  answer += `found ${symbolCount} relevant symbols across ${fileCount} files. `;
-  answer += `Key locations: ${topFiles.join(', ')}. `;
-  answer += `Primary symbols: ${topSymbols.join(', ')}. `;
+  // Group targets by role for a structured description
+  const byRole: Record<string, JumpTarget[]> = {};
+  for (const t of targets) {
+    const role = t.role || 'other';
+    if (!byRole[role]) byRole[role] = [];
+    byRole[role].push(t);
+  }
 
-  // Add task-specific guidance
+  // Build a descriptive summary from roles
+  const roleSummaries: string[] = [];
+  if (byRole['entry'] || byRole['init']) {
+    const entries = [...(byRole['entry'] || []), ...(byRole['init'] || [])];
+    const names = entries.slice(0, 2).map(t => `\`${t.symbol}\``);
+    roleSummaries.push(`Entry points: ${names.join(', ')} in ${getRelativePath(entries[0].file)}`);
+  }
+  if (byRole['interface']) {
+    const ifaces = byRole['interface'];
+    const names = ifaces.slice(0, 3).map(t => `\`${t.symbol}\``);
+    roleSummaries.push(`Key interfaces: ${names.join(', ')}`);
+  }
+  if (byRole['core'] || byRole['operation']) {
+    const ops = [...(byRole['core'] || []), ...(byRole['operation'] || [])];
+    const names = ops.slice(0, 3).map(t => `\`${t.symbol}\``);
+    roleSummaries.push(`Core operations: ${names.join(', ')}`);
+  }
+  if (byRole['config']) {
+    const configs = byRole['config'];
+    const names = configs.slice(0, 2).map(t => `\`${t.symbol}\``);
+    roleSummaries.push(`Configuration: ${names.join(', ')}`);
+  }
+
+  // If no role-based summaries, fall back to top targets
+  if (roleSummaries.length === 0) {
+    const topTargets = targets.slice(0, 4);
+    for (const t of topTargets) {
+      roleSummaries.push(`\`${t.symbol}\` in ${getRelativePath(t.file)}${t.why?.[0] ? ` (${t.why[0]})` : ''}`);
+    }
+  }
+
+  // Build the answer
+  let answer = `Found ${targets.length} relevant symbols across ${fileCount} files for "${query || 'your request'}". `;
+  answer += roleSummaries.join('. ') + '. ';
+
+  // Add high-confidence target descriptions using 'why' field
+  const highConf = targets.filter(t => t.confidence >= 0.8).slice(0, 2);
+  if (highConf.length > 0) {
+    const reasons = highConf.flatMap(t => t.why || []).slice(0, 3);
+    if (reasons.length > 0) {
+      answer += `Matched because: ${reasons.join('; ')}. `;
+    }
+  }
+
+  // Task-specific guidance
   switch (taskType) {
     case 'understand':
-      answer += `Review these files to understand the implementation architecture and data flow.`;
+      answer += `Use the jump targets and code snippets below to trace the implementation flow.`;
       break;
     case 'debug':
       answer += `Start debugging by examining these symbols for potential issues or error conditions.`;

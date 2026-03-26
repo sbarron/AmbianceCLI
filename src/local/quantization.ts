@@ -10,6 +10,25 @@
 
 import { logger } from '../utils/logger';
 
+// Re-export turbo quantization for unified access
+export {
+  TurboQuantizedEmbedding,
+  TurboBits,
+  turboQuantize,
+  turboDequantize,
+  turboSearchSimilarities,
+  buildDistanceLookupTable,
+  turboApproxDotProduct,
+  serializeTurboEmbedding,
+  deserializeTurboEmbedding,
+  isTurboQuantized,
+  calculateTurboQuantizationError,
+  getTurboStorageSize,
+  clearRotationCache,
+} from './turboQuantization';
+
+export type EmbeddingFormat = 'float32' | 'int8' | 'turbo2' | 'turbo4';
+
 /**
  * Quantization parameters for int8 conversion
  */

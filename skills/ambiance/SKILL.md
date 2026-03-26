@@ -20,10 +20,10 @@ The single biggest factor in result quality is query specificity.
 Always include concrete function names, class names, or identifiers you already know. If you don't know any yet, use `ambiance hints` or `ambiance summary` first to discover them, then re-query with the symbols you find.
 
 ### 2. Pick the right format before running
-- **Default `context`** (no `--format` flag): Returns focused, low-noise results organized by symbols and relationships. Best when you need to understand what functions exist and how they connect. Use with specific symbol names for surgical precision.
-- **`--format index`**: Returns file:line jump targets with more results but more noise. Use when you need line numbers to navigate to, or for broad "where is X referenced" sweeps.
+- **Default `context`** (no `--format` flag): Returns jump targets, code snippets, answer analysis, evidence, and next actions. This is the `enhanced` format and the best starting point for most queries.
+- **`--format index`**: Same analysis but omits code snippets — returns only jump target locations. Use when you need compact file:line navigation without the code bulk.
 
-**Default to `context` (no format flag).** Only switch to `--format index` when you specifically need line-number jump targets.
+**Default to `context` (no format flag).** Only switch to `--format index` when you specifically need compact jump-target-only output.
 
 ### 3. Complete the ambiance workflow — do NOT bail out early
 Agents have a strong bias toward built-in tools (Read, Grep, Glob). Resist this:
@@ -36,11 +36,11 @@ The `answerDraft` field in results is **extracted metadata** (symbols, relations
 
 ## Core Workflow
 
-1. Run `ambiance embeddings status --json` only for first-run setup, environment changes, or command failures. Create embeddings if needed.
-2. Start with semantic understanding (default format, symbol-anchored query):
-   - `ambiance context "<symbol-anchored query>" --json --project-path <path> --auto-sync`
-3. If you need line-number jump targets, follow up with index format:
-   - `ambiance context "<query>" --format index --json --project-path <path> --auto-sync`
+1. Start with semantic understanding (default format, symbol-anchored query):
+   - `ambiance context "<symbol-anchored query>" --json --project-path <path> --embeddings`
+   - Embeddings are automatically created if missing and refreshed if stale before the query runs. No manual setup needed.
+2. If you need compact jump targets without code snippets, follow up with index format:
+   - `ambiance context "<query>" --format index --json --project-path <path> --embeddings`
 4. Narrow and confirm structure with AST search:
    - `ambiance grep "<ast pattern>" --json --project-path <path> --file-pattern "<glob>"`
 5. Get file-level API/symbol extraction:
@@ -58,9 +58,9 @@ The `answerDraft` field in results is **extracted metadata** (symbols, relations
 
 | Goal | Format | Why |
 |------|--------|-----|
-| Understand what code does and how symbols relate | `context` (default) | Focused, low-noise, symbol-organized output |
-| Find line numbers to jump to specific locations | `context --format index` | Returns file:line targets for navigation |
-| Broad sweep for all references to a concept | `context --format index` | Casts a wider net, accepts more noise |
+| Understand code with jump targets + snippets | `context` (default = enhanced) | Full analysis: targets, code snippets, evidence, next actions |
+| Compact navigation to specific locations | `context --format index` | Same analysis but omits code snippets — just file:line targets |
+| Broad sweep for all references to a concept | `context --format index` | Casts a wider net, compact output |
 | Deep understanding of a single file's API | `summary <file>` | Complete symbol extraction for one file |
 
 ## Query Strategy
@@ -77,15 +77,15 @@ The `answerDraft` field in results is **extracted metadata** (symbols, relations
 
 ## Search Routing Policy
 
-1. Use `context` (default format) first for semantic understanding with symbol-anchored queries.
-2. Use `context --format index` second when you need file:line jump targets.
+1. Use `context` (default enhanced format) first for semantic understanding with symbol-anchored queries.
+2. Use `context --format index` second when you need compact jump targets without code snippets.
 3. Use `ambiance grep` third when AST structure/captures are required.
 4. Use native text search last (`rg -n "<term>" <path>`, fallback `grep -R`) to fill exact details.
 5. On large repos, apply scope early with `--file-pattern` and `--exclude`/`--exclude-patterns`.
 
 ## Index Hygiene
 
-1. Prefer incremental freshness with `context --auto-sync` by default.
+1. Embeddings are automatically created (if missing) and refreshed (if stale) before each context query when `--embeddings` flag or `USE_LOCAL_EMBEDDINGS=true` env var is set.
 2. Use `embeddings status` for troubleshooting, maintenance, or explicit audits.
 3. Use full rebuild (`embeddings create --force true`) only for migration or broken indexes.
 

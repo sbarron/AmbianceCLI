@@ -25,6 +25,17 @@ import {
   isQuantized,
   serializeQuantizedEmbedding,
   deserializeQuantizedEmbedding,
+  EmbeddingFormat,
+  TurboQuantizedEmbedding,
+  turboQuantize,
+  turboDequantize,
+  turboSearchSimilarities,
+  buildDistanceLookupTable,
+  turboApproxDotProduct,
+  serializeTurboEmbedding,
+  deserializeTurboEmbedding,
+  isTurboQuantized,
+  TurboBits,
 } from './quantization';
 
 export interface EmbeddingChunk {
@@ -34,14 +45,14 @@ export interface EmbeddingChunk {
   filePath: string; // Keep for backward compatibility and queries
   chunkIndex: number;
   content: string;
-  embedding: number[] | QuantizedEmbedding; // Support both float32 and quantized int8
+  embedding: number[] | QuantizedEmbedding | TurboQuantizedEmbedding; // Support float32, int8, and turbo-quantized
   metadata: {
     startLine?: number;
     endLine?: number;
     language?: string;
     symbols?: string[];
     type: 'code' | 'comment' | 'docstring' | 'import' | 'export';
-    embeddingFormat?: 'float32' | 'int8';
+    embeddingFormat?: EmbeddingFormat;
     embeddingDimensions?: number;
     embeddingProvider?: string;
   };
@@ -119,6 +130,8 @@ export class LocalEmbeddingStorage {
   private dbPath: string;
   private initialized = false;
   private enableQuantization: boolean;
+  private quantizationMode: EmbeddingFormat; // 'float32' | 'int8' | 'turbo2' | 'turbo4'
+  private turboRotationSeed: number;
 
   // Quota management
   private projectQuotas: Map<string, number> = new Map(); // projectId -> quota in bytes
@@ -161,6 +174,22 @@ export class LocalEmbeddingStorage {
 
     // Enable quantization by default for new installations, or based on explicit setting
     this.enableQuantization = enableQuantization ?? process.env.EMBEDDING_QUANTIZATION === 'true';
+
+    // Determine quantization mode: 'true'/'int8' → int8, 'turbo2' → 2-bit turbo, 'turbo4' → 4-bit turbo
+    const quantMode = process.env.EMBEDDING_QUANTIZATION || '';
+    if (quantMode === 'turbo4') {
+      this.quantizationMode = 'turbo4';
+      this.enableQuantization = true;
+    } else if (quantMode === 'turbo2') {
+      this.quantizationMode = 'turbo2';
+      this.enableQuantization = true;
+    } else {
+      this.quantizationMode = this.enableQuantization ? 'int8' : 'float32';
+    }
+
+    // Deterministic rotation seed for turbo quantization (per-installation, stable)
+    // Users can override via TURBO_ROTATION_SEED for reproducibility across machines
+    this.turboRotationSeed = parseInt(process.env.TURBO_ROTATION_SEED || '42', 10);
 
     // Initialize quota management
     this.enableQuotas = process.env.EMBEDDING_QUOTAS === 'true';
@@ -717,34 +746,69 @@ export class LocalEmbeddingStorage {
 
     try {
       // Prepare embedding for storage (quantize if enabled)
-      let embeddingToStore: number[] | QuantizedEmbedding;
-      let embeddingFormat: 'float32' | 'int8' = 'float32';
+      let embeddingToStore: number[] | QuantizedEmbedding | TurboQuantizedEmbedding;
+      let embeddingFormat: EmbeddingFormat = 'float32';
 
       if (this.enableQuantization && Array.isArray(chunk.embedding)) {
-        // Quantize float32 embedding to int8 for storage
-        try {
-          embeddingToStore = quantizeFloat32ToInt8(chunk.embedding);
-          embeddingFormat = 'int8';
+        // Choose quantization strategy based on mode
+        if (this.quantizationMode === 'turbo4' || this.quantizationMode === 'turbo2') {
+          // Turbo quantization: rotate + optimal scalar quantize
+          const turboBits: TurboBits = this.quantizationMode === 'turbo4' ? 4 : 2;
+          try {
+            embeddingToStore = turboQuantize(chunk.embedding, turboBits, this.turboRotationSeed);
+            embeddingFormat = this.quantizationMode;
 
-          logger.debug('🔢 Quantized embedding for storage', {
-            chunkId: chunk.id,
-            originalSize: chunk.embedding.length * 4,
-            quantizedSize: embeddingToStore.data.length,
-            compressionRatio: ((chunk.embedding.length * 4) / embeddingToStore.data.length).toFixed(
-              1
-            ),
-          });
-        } catch (quantizationError) {
-          logger.warn('⚠️ Quantization failed, storing as float32', {
-            chunkId: chunk.id,
-            error:
-              quantizationError instanceof Error
+            logger.debug('⚡ Turbo-quantized embedding for storage', {
+              chunkId: chunk.id,
+              bits: turboBits,
+              originalSize: chunk.embedding.length * 4,
+              packedSize: embeddingToStore.data.length,
+              compressionRatio: ((chunk.embedding.length * 4) / (embeddingToStore.data.length + 16)).toFixed(1),
+            });
+          } catch (quantizationError) {
+            // Fall back to int8
+            logger.warn('⚠️ Turbo quantization failed, falling back to int8', {
+              chunkId: chunk.id,
+              error: quantizationError instanceof Error
                 ? quantizationError.message
                 : String(quantizationError),
-          });
-          embeddingToStore = chunk.embedding;
-          embeddingFormat = 'float32';
+            });
+            try {
+              embeddingToStore = quantizeFloat32ToInt8(chunk.embedding);
+              embeddingFormat = 'int8';
+            } catch {
+              embeddingToStore = chunk.embedding;
+              embeddingFormat = 'float32';
+            }
+          }
+        } else {
+          // Legacy int8 quantization
+          try {
+            embeddingToStore = quantizeFloat32ToInt8(chunk.embedding);
+            embeddingFormat = 'int8';
+
+            logger.debug('🔢 Quantized embedding for storage', {
+              chunkId: chunk.id,
+              originalSize: chunk.embedding.length * 4,
+              quantizedSize: (embeddingToStore as QuantizedEmbedding).data.length,
+              compressionRatio: ((chunk.embedding.length * 4) / (embeddingToStore as QuantizedEmbedding).data.length).toFixed(1),
+            });
+          } catch (quantizationError) {
+            logger.warn('⚠️ Quantization failed, storing as float32', {
+              chunkId: chunk.id,
+              error:
+                quantizationError instanceof Error
+                  ? quantizationError.message
+                  : String(quantizationError),
+            });
+            embeddingToStore = chunk.embedding;
+            embeddingFormat = 'float32';
+          }
         }
+      } else if (isTurboQuantized(chunk.embedding)) {
+        // Already turbo-quantized (passed in directly)
+        embeddingToStore = chunk.embedding;
+        embeddingFormat = chunk.embedding.bits === 2 ? 'turbo2' : 'turbo4';
       } else {
         // Store as-is (either already quantized or quantization disabled)
         embeddingToStore = chunk.embedding;
@@ -752,9 +816,14 @@ export class LocalEmbeddingStorage {
       }
 
       // Serialize embedding vector
-      const embeddingBlob = isQuantized(embeddingToStore)
-        ? serializeQuantizedEmbedding(embeddingToStore)
-        : Buffer.from(JSON.stringify(embeddingToStore));
+      let embeddingBlob: Buffer;
+      if (isTurboQuantized(embeddingToStore)) {
+        embeddingBlob = serializeTurboEmbedding(embeddingToStore);
+      } else if (isQuantized(embeddingToStore)) {
+        embeddingBlob = serializeQuantizedEmbedding(embeddingToStore);
+      } else {
+        embeddingBlob = Buffer.from(JSON.stringify(embeddingToStore));
+      }
 
       const symbolsJson = chunk.metadata.symbols ? JSON.stringify(chunk.metadata.symbols) : null;
 
@@ -1121,10 +1190,57 @@ export class LocalEmbeddingStorage {
       return [];
     }
 
-    const similarities = allEmbeddings.map(chunk => ({
-      chunk,
-      similarity: this.cosineSimilarity(queryEmbedding, chunk.embedding),
-    }));
+    // Partition embeddings by format for optimal search strategy
+    const turboChunks: { chunk: EmbeddingChunk; turboEmb: TurboQuantizedEmbedding }[] = [];
+    const legacyChunks: EmbeddingChunk[] = [];
+
+    for (const chunk of allEmbeddings) {
+      if (isTurboQuantized(chunk.embedding)) {
+        turboChunks.push({ chunk, turboEmb: chunk.embedding });
+      } else {
+        legacyChunks.push(chunk);
+      }
+    }
+
+    let similarities: { chunk: EmbeddingChunk; similarity: number }[] = [];
+
+    // Fast path: turbo-quantized embeddings use precomputed lookup table (no dequantization)
+    if (turboChunks.length > 0) {
+      // Group by bits to build one LUT per bit-depth
+      const turbo2: typeof turboChunks = [];
+      const turbo4: typeof turboChunks = [];
+      for (const t of turboChunks) {
+        if (t.turboEmb.bits === 2) turbo2.push(t);
+        else turbo4.push(t);
+      }
+
+      for (const group of [turbo2, turbo4]) {
+        if (group.length === 0) continue;
+        const bits = group[0].turboEmb.bits;
+        const seed = group[0].turboEmb.rotationSeed;
+        const lut = buildDistanceLookupTable(queryEmbedding, bits, seed);
+
+        for (const { chunk, turboEmb } of group) {
+          similarities.push({
+            chunk,
+            similarity: turboApproxDotProduct(lut, turboEmb),
+          });
+        }
+      }
+
+      logger.debug('⚡ Turbo search completed', {
+        turboCount: turboChunks.length,
+        legacyCount: legacyChunks.length,
+      });
+    }
+
+    // Legacy path: int8 and float32 embeddings use dequantize + cosine similarity
+    for (const chunk of legacyChunks) {
+      similarities.push({
+        chunk,
+        similarity: this.cosineSimilarity(queryEmbedding, chunk.embedding),
+      });
+    }
 
     // Sort by similarity first
     similarities.sort((a, b) => b.similarity - a.similarity);
@@ -1157,15 +1273,25 @@ export class LocalEmbeddingStorage {
   }
 
   /**
-   * Calculate cosine similarity between two vectors (handles both quantized and float32)
+   * Calculate cosine similarity between two vectors (handles float32, int8, and turbo-quantized)
+   * Note: For turbo-quantized vectors, the fast LUT path in searchSimilarEmbeddings is preferred.
+   * This method handles turbo as a fallback by dequantizing first.
    */
   private cosineSimilarity(
-    a: number[] | QuantizedEmbedding,
-    b: number[] | QuantizedEmbedding
+    a: number[] | QuantizedEmbedding | TurboQuantizedEmbedding,
+    b: number[] | QuantizedEmbedding | TurboQuantizedEmbedding
   ): number {
-    // Normalize both embeddings to float32 arrays
-    const aFloat32 = isQuantized(a) ? dequantizeInt8ToFloat32(a) : a;
-    const bFloat32 = isQuantized(b) ? dequantizeInt8ToFloat32(b) : b;
+    // Normalize all formats to float32 arrays
+    const aFloat32 = isTurboQuantized(a)
+      ? turboDequantize(a)
+      : isQuantized(a)
+        ? dequantizeInt8ToFloat32(a)
+        : a;
+    const bFloat32 = isTurboQuantized(b)
+      ? turboDequantize(b)
+      : isQuantized(b)
+        ? dequantizeInt8ToFloat32(b)
+        : b;
 
     if (aFloat32.length !== bFloat32.length) return 0;
 
@@ -1183,15 +1309,6 @@ export class LocalEmbeddingStorage {
 
     const similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 
-    // Log quantization impact for debugging
-    if (isQuantized(a) || isQuantized(b)) {
-      logger.debug('🔍 Cosine similarity with quantization', {
-        similarity,
-        aFormat: isQuantized(a) ? 'int8' : 'float32',
-        bFormat: isQuantized(b) ? 'int8' : 'float32',
-      });
-    }
-
     return similarity;
   }
 
@@ -1200,11 +1317,21 @@ export class LocalEmbeddingStorage {
    */
   private rowToChunk(row: any): EmbeddingChunk {
     const embeddingBuffer = row.embedding as Buffer;
-    let embedding: number[] | QuantizedEmbedding;
+    let embedding: number[] | QuantizedEmbedding | TurboQuantizedEmbedding;
 
-    // Check if this is a quantized embedding (newer format)
-    const embeddingFormat = row.metadata_embedding_format;
-    if (embeddingFormat === 'int8') {
+    // Check the embedding format and deserialize accordingly
+    const embeddingFormat = row.metadata_embedding_format as EmbeddingFormat | null;
+    if (embeddingFormat === 'turbo2' || embeddingFormat === 'turbo4') {
+      try {
+        embedding = deserializeTurboEmbedding(embeddingBuffer);
+      } catch (error) {
+        logger.warn('⚠️ Failed to deserialize turbo embedding, treating as float32', {
+          error: error instanceof Error ? error.message : String(error),
+          embeddingId: row.id,
+        });
+        embedding = JSON.parse(embeddingBuffer.toString()) as number[];
+      }
+    } else if (embeddingFormat === 'int8') {
       try {
         // Deserialize quantized embedding
         embedding = deserializeQuantizedEmbedding(embeddingBuffer);
@@ -2752,8 +2879,11 @@ export class LocalEmbeddingStorage {
   /**
    * Estimate the storage size of an embedding
    */
-  private estimateEmbeddingSize(embedding: number[] | QuantizedEmbedding): number {
-    if (isQuantized(embedding)) {
+  private estimateEmbeddingSize(embedding: number[] | QuantizedEmbedding | TurboQuantizedEmbedding): number {
+    if (isTurboQuantized(embedding)) {
+      // Turbo: 16-byte header + packed codes
+      return 16 + embedding.data.length;
+    } else if (isQuantized(embedding)) {
       // For quantized embeddings, use the actual serialized size
       return JSON.stringify(embedding).length;
     } else {
@@ -2800,7 +2930,64 @@ export class LocalEmbeddingStorage {
    */
   setQuantizationEnabled(enabled: boolean): void {
     this.enableQuantization = enabled;
-    logger.info('🔧 Quantization setting updated', { enabled });
+    if (!enabled) this.quantizationMode = 'float32';
+    logger.info('🔧 Quantization setting updated', { enabled, mode: this.quantizationMode });
+  }
+
+  /**
+   * Set the quantization mode for future embeddings.
+   * Modes: 'float32' (off), 'int8' (legacy), 'turbo2' (2-bit turbo), 'turbo4' (4-bit turbo)
+   */
+  setQuantizationMode(mode: EmbeddingFormat): void {
+    this.quantizationMode = mode;
+    this.enableQuantization = mode !== 'float32';
+    logger.info('🔧 Quantization mode updated', { mode, enabled: this.enableQuantization });
+  }
+
+  /**
+   * Get the current quantization mode
+   */
+  getQuantizationMode(): EmbeddingFormat {
+    return this.quantizationMode;
+  }
+
+  /**
+   * Set the rotation seed for turbo quantization
+   */
+  setTurboRotationSeed(seed: number): void {
+    this.turboRotationSeed = seed;
+    logger.info('🔧 Turbo rotation seed updated', { seed });
+  }
+
+  /**
+   * Get the dominant embedding format stored for a project.
+   * Returns the format used by the majority of embeddings, or null if no embeddings exist.
+   */
+  async getStoredEmbeddingFormat(projectId: string): Promise<EmbeddingFormat | null> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const row = this.db.prepare(`
+        SELECT metadata_embedding_format, COUNT(*) as cnt
+        FROM embeddings
+        WHERE project_id = ?
+        GROUP BY metadata_embedding_format
+        ORDER BY cnt DESC
+        LIMIT 1
+      `).get(projectId) as { metadata_embedding_format: string | null; cnt: number } | undefined;
+
+      if (!row || !row.metadata_embedding_format) return null;
+      return row.metadata_embedding_format as EmbeddingFormat;
+    } catch (err) {
+      logger.warn('Failed to query stored embedding format', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+      });
+      return null;
+    }
   }
 
   /**

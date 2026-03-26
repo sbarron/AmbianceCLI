@@ -19,6 +19,7 @@ import { logger } from '../utils/logger';
 // Optional tree-sitter import to avoid hard native dependency at runtime
 let Parser: any = null;
 let TypeScript: any = null;
+let TSX: any = null;
 let JavaScript: any = null;
 let Python: any = null;
 
@@ -33,6 +34,7 @@ async function initializeTreeSitterParsers() {
     if (!TypeScript) {
       const tsModule = await import('tree-sitter-typescript');
       TypeScript = tsModule.default.typescript;
+      TSX = tsModule.default.tsx;
     }
 
     if (!JavaScript) {
@@ -101,11 +103,17 @@ export class TreeSitterProcessor {
     try {
       if (TypeScript) {
         const tsParser = new Parser();
+        const tsxParser = new Parser();
         try {
           tsParser.setLanguage(TypeScript);
           this.parsers.set('typescript', tsParser);
+
+          if (TSX) {
+            tsxParser.setLanguage(TSX);
+            this.parsers.set('tsx', tsxParser);
+          }
         } catch (error) {
-          logger.warn('Failed to initialize TypeScript parser:', {
+          logger.warn('Failed to initialize TypeScript/TSX parser:', {
             error: error instanceof Error ? error.message : String(error),
           });
         }
@@ -345,7 +353,7 @@ export class TreeSitterProcessor {
     try {
       if (!node || !node.type) return false;
 
-      if (language === 'typescript' || language === 'javascript') {
+      if (language === 'typescript' || language === 'tsx' || language === 'javascript') {
         return [
           'function_declaration',
           'method_definition',
@@ -416,7 +424,7 @@ export class TreeSitterProcessor {
           const ids = node.descendantsOfType(['identifier', 'property_identifier']);
           if (ids && ids[0] && ids[0].text) return ids[0].text;
         }
-      } catch {}
+      } catch { }
       return undefined;
     } catch (error) {
       logger.warn('Error getting symbol name', {
@@ -498,7 +506,7 @@ export class TreeSitterProcessor {
   }
 
   private isSymbolNode(node: any, language: string): boolean {
-    if (language === 'typescript' || language === 'javascript') {
+    if (language === 'typescript' || language === 'tsx' || language === 'javascript') {
       return [
         'function_declaration',
         'function_expression',
@@ -527,7 +535,7 @@ export class TreeSitterProcessor {
   private extractXRefs(tree: any, language: string): CodeXRef[] {
     const xrefs: CodeXRef[] = [];
     const traverse = (node: any) => {
-      if (language === 'typescript' || language === 'javascript') {
+      if (language === 'typescript' || language === 'tsx' || language === 'javascript') {
         if (node.type === 'import_statement' || node.type === 'export_statement') {
           const kind = node.type === 'import_statement' ? 'import' : 'export';
           const pathNode =
@@ -565,7 +573,7 @@ export class TreeSitterProcessor {
               const dotted = node.descendantsOfType('dotted_name');
               if (dotted && dotted[0] && dotted[0].text) modulePath = dotted[0].text;
             }
-          } catch {}
+          } catch { }
 
           try {
             if (typeof node.descendantsOfType === 'function') {
@@ -581,7 +589,7 @@ export class TreeSitterProcessor {
                 });
               }
             }
-          } catch {}
+          } catch { }
         }
       }
 

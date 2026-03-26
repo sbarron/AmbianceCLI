@@ -601,10 +601,15 @@ export class LocalEmbeddingGenerator {
     for (let i = 0; i < chunks.length; i += batchSize) {
       const batch = chunks.slice(i, i + batchSize);
       const batchContents = batch
-        .map(chunk => chunk.content)
-        .filter(
-          content => content !== undefined && content !== null && typeof content === 'string'
-        );
+        .map(chunk => {
+          if (chunk.content !== undefined && chunk.content !== null && typeof chunk.content === 'string') {
+            // Prepend file path to help the model associate chunks with their location
+            // This enables searching by filename or path, even for fallback chunks without symbols
+            return `File: ${relativePath}\n\n${chunk.content}`;
+          }
+          return null;
+        })
+        .filter(content => content !== null) as string[];
 
       if (batchContents.length > 0) {
         batches.push(batchContents);
@@ -1138,8 +1143,8 @@ export class LocalEmbeddingGenerator {
       .join(', ');
     throw new Error(
       `Embedding generation failed with all providers. ` +
-        `Available providers: ${availableProviders}. ` +
-        `Check API keys, network connectivity, and provider configurations.`
+      `Available providers: ${availableProviders}. ` +
+      `Check API keys, network connectivity, and provider configurations.`
     );
   }
 
@@ -1566,7 +1571,7 @@ export class LocalEmbeddingGenerator {
       '.mjs': 'javascript',
       '.cjs': 'javascript',
       '.ts': 'typescript',
-      '.tsx': 'typescript',
+      '.tsx': 'tsx',
       '.mts': 'typescript',
       '.cts': 'typescript',
       '.py': 'python',

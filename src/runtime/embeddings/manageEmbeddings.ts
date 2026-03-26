@@ -10,7 +10,7 @@
 
 import { logger } from '../../utils/logger';
 import { validateAndResolvePath } from '../utils/pathUtils';
-import { LocalEmbeddingStorage } from '../../local/embeddingStorage';
+import { LocalEmbeddingStorage, type EmbeddingChunk } from '../../local/embeddingStorage';
 import { LocalEmbeddingGenerator } from '../../local/embeddingGenerator';
 import { ProjectIdentifier } from '../../local/projectIdentifier';
 import {
@@ -23,7 +23,7 @@ import { getCurrentModelConfiguration } from './modelConfiguration';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding } from '../../local/quantization';
+import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding, isTurboQuantized, turboDequantize, TurboQuantizedEmbedding } from '../../local/quantization';
 
 export { getCurrentModelConfiguration };
 
@@ -48,6 +48,7 @@ export type ManageEmbeddingsAction =
   | 'delete_project'
   | 'project_details'
   | 'recent_files'
+  | 'file_chunks'
   | 'check_stale'
   | 'find_duplicates'
   | 'cleanup_duplicates'
@@ -65,6 +66,7 @@ export const SUPPORTED_ACTIONS: readonly ManageEmbeddingsAction[] = [
   'delete_project',
   'project_details',
   'recent_files',
+  'file_chunks',
   'check_stale',
   'find_duplicates',
   'cleanup_duplicates',
@@ -94,8 +96,12 @@ export interface ManageEmbeddingsRequest {
   files?: string[];
   // Recent files options
   limit?: number;
+  // File chunks options
+  filePath?: string;
   // Check stale options
   autoUpdate?: boolean;
+  // Quantization format override
+  quantization?: 'turbo4' | 'turbo2' | 'int8' | 'float32';
 }
 
 interface ProjectResolution {
@@ -156,6 +162,7 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
           projectPath,
           force: args.force,
           batchSize: args.batchSize,
+          quantization: args.quantization,
         });
       }
       case 'update': {
@@ -165,6 +172,7 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
           files: args.files,
           force: args.force,
           batchSize: args.batchSize,
+          quantization: args.quantization,
         });
       }
       case 'validate': {
@@ -202,6 +210,16 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
         return await getRecentlyUpdatedFiles({
           projectPath,
           limit: args.limit || 20,
+        });
+      }
+      case 'file_chunks': {
+        const projectPath = requireProjectPath(args.projectPath);
+        if (!args.filePath || typeof args.filePath !== 'string' || args.filePath.trim().length === 0) {
+          throw new Error('filePath is required for file_chunks action');
+        }
+        return await getFileChunks({
+          projectPath,
+          filePath: args.filePath,
         });
       }
       case 'check_stale': {
@@ -479,6 +497,7 @@ export async function createProjectEmbeddings(args: {
   projectPath: string;
   force?: boolean;
   batchSize?: number;
+  quantization?: 'turbo4' | 'turbo2' | 'int8' | 'float32';
 }): Promise<any> {
   const {
     projectPath,
@@ -487,6 +506,7 @@ export async function createProjectEmbeddings(args: {
       const parsed = parseInt(process.env.EMBEDDING_BATCH_SIZE || '', 10);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : 32;
     })(),
+    quantization,
   } = args;
 
   const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
@@ -496,10 +516,18 @@ export async function createProjectEmbeddings(args: {
     projectId,
     force,
     batchSize,
+    quantization: quantization || 'default',
   });
 
   try {
     const storage = new LocalEmbeddingStorage();
+
+    // Apply quantization override if specified via --quantization flag
+    if (quantization) {
+      storage.setQuantizationMode(quantization as any);
+      logger.info('Quantization mode overridden via flag', { quantization });
+    }
+
     const generator = new LocalEmbeddingGenerator(storage);
 
     if (!force) {
@@ -592,8 +620,9 @@ export async function updateProjectEmbeddings(args: {
   files?: string[];
   force?: boolean;
   batchSize?: number;
+  quantization?: 'turbo4' | 'turbo2' | 'int8' | 'float32';
 }): Promise<any> {
-  const { projectPath, files, force = false, batchSize = 10 } = args;
+  const { projectPath, files, force = false, batchSize = 10, quantization } = args;
 
   const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
 
@@ -603,11 +632,46 @@ export async function updateProjectEmbeddings(args: {
     filesToUpdate: files?.length || 'auto-detect',
     force,
     batchSize,
+    quantization: quantization || 'default',
   });
 
   try {
+    // Check if quantization format is changing — if so, we need a full re-index
+    if (quantization) {
+      const storage = new LocalEmbeddingStorage();
+      const storedFormat = await storage.getStoredEmbeddingFormat(projectId);
+
+      if (storedFormat && storedFormat !== quantization) {
+        logger.info('Quantization format change detected — triggering full re-index', {
+          storedFormat,
+          requestedFormat: quantization,
+          projectId,
+        });
+
+        // Delegate to createProjectEmbeddings with force=true for a clean re-index
+        return await createProjectEmbeddings({
+          projectPath: resolvedProjectPath,
+          force: true,
+          batchSize,
+          quantization,
+        });
+      }
+
+      // Apply the quantization mode for new embeddings
+      storage.setQuantizationMode(quantization as any);
+    }
+
     const { LocalEmbeddingGenerator } = await import('../../local/embeddingGenerator');
-    const embeddingGenerator = new LocalEmbeddingGenerator();
+    const storage = quantization ? new LocalEmbeddingStorage() : undefined;
+
+    // If quantization override specified, create generator with configured storage
+    if (quantization && storage) {
+      storage.setQuantizationMode(quantization as any);
+    }
+
+    const embeddingGenerator = storage
+      ? new LocalEmbeddingGenerator(storage)
+      : new LocalEmbeddingGenerator();
 
     const result = await embeddingGenerator.updateProjectEmbeddings(
       projectId,
@@ -647,6 +711,7 @@ export async function updateProjectEmbeddings(args: {
       updated: success,
       projectId,
       projectPath: resolvedProjectPath,
+      quantizationFormat: quantization || 'unchanged',
       result,
       message: success
         ? `Updated ${result.embeddings} embeddings across ${result.processedFiles} files`
@@ -702,6 +767,183 @@ export async function getRecentlyUpdatedFiles(args: {
     });
     throw new Error(`Failed to fetch recently updated files: ${(error as Error).message}`);
   }
+}
+
+type ChunkingMode =
+  | 'smart_ast_likely'
+  | 'simple_line_likely'
+  | 'unknown';
+
+function normalizePathForComparison(inputPath: string): string {
+  const normalized = path.normalize(inputPath).replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function inferChunkingMode(chunks: EmbeddingChunk[]): {
+  mode: ChunkingMode;
+  confidence: 'high' | 'medium' | 'low';
+  signals: string[];
+} {
+  if (chunks.length === 0) {
+    return {
+      mode: 'unknown',
+      confidence: 'low',
+      signals: ['No chunks found for file'],
+    };
+  }
+
+  const hasSymbols = chunks.some(chunk => (chunk.metadata.symbols?.length || 0) > 0);
+
+  let hasOutOfOrderStartLines = false;
+  let hasOverlapBetweenConsecutiveChunks = false;
+  for (let i = 1; i < chunks.length; i++) {
+    const previous = chunks[i - 1].metadata;
+    const current = chunks[i].metadata;
+    if (
+      typeof previous.startLine === 'number' &&
+      typeof current.startLine === 'number' &&
+      current.startLine < previous.startLine
+    ) {
+      hasOutOfOrderStartLines = true;
+    }
+    if (
+      typeof previous.endLine === 'number' &&
+      typeof current.startLine === 'number' &&
+      current.startLine <= previous.endLine
+    ) {
+      hasOverlapBetweenConsecutiveChunks = true;
+    }
+  }
+
+  if (hasOutOfOrderStartLines || hasSymbols) {
+    const signals: string[] = [];
+    if (hasOutOfOrderStartLines) {
+      signals.push('Chunk start lines are out of order when sorted by chunk index');
+    }
+    if (hasSymbols) {
+      signals.push('Chunk metadata includes extracted symbols');
+    }
+    return {
+      mode: 'smart_ast_likely',
+      confidence: hasOutOfOrderStartLines || hasSymbols ? 'high' : 'medium',
+      signals,
+    };
+  }
+
+  if (chunks.length > 1 && hasOverlapBetweenConsecutiveChunks) {
+    return {
+      mode: 'simple_line_likely',
+      confidence: 'medium',
+      signals: ['Consecutive chunks overlap in line ranges with monotonic chunk indices'],
+    };
+  }
+
+  return {
+    mode: 'unknown',
+    confidence: chunks.length === 1 ? 'low' : 'medium',
+    signals: ['Insufficient distinctive signals to classify chunking strategy confidently'],
+  };
+}
+
+export async function getFileChunks(args: {
+  projectPath: string;
+  filePath: string;
+}): Promise<any> {
+  const { projectPath, filePath } = args;
+  const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
+
+  const storage = new LocalEmbeddingStorage();
+  const projectFiles = await storage.listProjectFiles(projectId);
+
+  const requestedRelativePath = path.isAbsolute(filePath)
+    ? path.relative(resolvedProjectPath, filePath)
+    : filePath;
+  const normalizedRequestedPath = normalizePathForComparison(requestedRelativePath);
+
+  const matchedFile = projectFiles.find(
+    file => normalizePathForComparison(file.path) === normalizedRequestedPath
+  );
+
+  if (!matchedFile) {
+    const requestedBasename = path.basename(requestedRelativePath).toLowerCase();
+    const suggestions = projectFiles
+      .filter(file => {
+        const filePathLower = file.path.toLowerCase();
+        return (
+          path.basename(filePathLower) === requestedBasename ||
+          filePathLower.includes(requestedBasename)
+        );
+      })
+      .slice(0, 5)
+      .map(file => file.path);
+
+    const suggestionText =
+      suggestions.length > 0
+        ? ` Closest matches: ${suggestions.join(', ')}`
+        : '';
+
+    throw new Error(
+      `No embedded file matched "${filePath}" in project ${resolvedProjectPath}.${suggestionText}`
+    );
+  }
+
+  const chunks = await storage.getFileEmbeddings(projectId, matchedFile.id);
+  const uniqueChunkIndexes = new Set(chunks.map(chunk => chunk.chunkIndex)).size;
+  const chunking = inferChunkingMode(chunks);
+
+  const chunkRanges = chunks.map(chunk => ({
+    chunkIndex: chunk.chunkIndex,
+    startLine: chunk.metadata.startLine ?? null,
+    endLine: chunk.metadata.endLine ?? null,
+    lineCount:
+      typeof chunk.metadata.startLine === 'number' && typeof chunk.metadata.endLine === 'number'
+        ? Math.max(0, chunk.metadata.endLine - chunk.metadata.startLine + 1)
+        : null,
+    contentChars: chunk.content.length,
+    type: chunk.metadata.type,
+    symbols: chunk.metadata.symbols || [],
+  }));
+
+  const lineRange = chunkRanges.reduce(
+    (acc, chunk) => {
+      if (typeof chunk.startLine === 'number') {
+        acc.start = acc.start === null ? chunk.startLine : Math.min(acc.start, chunk.startLine);
+      }
+      if (typeof chunk.endLine === 'number') {
+        acc.end = acc.end === null ? chunk.endLine : Math.max(acc.end, chunk.endLine);
+      }
+      return acc;
+    },
+    { start: null as number | null, end: null as number | null }
+  );
+
+  return {
+    success: true,
+    projectId,
+    projectPath: resolvedProjectPath,
+    file: {
+      requestedPath: filePath,
+      matchedPath: matchedFile.path,
+      fileId: matchedFile.id,
+      language: matchedFile.language || null,
+      lineCount: matchedFile.lineCount || null,
+      lastModified: matchedFile.lastModified.toISOString(),
+    },
+    stats: {
+      embeddingCount: chunks.length,
+      uniqueChunkIndexes,
+      duplicateChunkIndexes: chunks.length - uniqueChunkIndexes,
+      lineRange,
+    },
+    chunking: {
+      mode: chunking.mode,
+      confidence: chunking.confidence,
+      inferred: true,
+      signals: chunking.signals,
+    },
+    chunks: chunkRanges,
+    message: `Found ${chunks.length} embedding chunk(s) for ${matchedFile.path}`,
+  };
 }
 
 /**
@@ -911,8 +1153,11 @@ export async function validateProjectEmbeddings(args: {
         let embeddingVector: number[];
         let embeddingLength: number;
 
-        // Handle both quantized and float32 embeddings
-        if (isQuantized(embedding.embedding)) {
+        // Handle float32, int8, and turbo-quantized embeddings
+        if (isTurboQuantized(embedding.embedding)) {
+          embeddingVector = turboDequantize(embedding.embedding);
+          embeddingLength = embedding.embedding.dimensions;
+        } else if (isQuantized(embedding.embedding)) {
           embeddingVector = dequantizeInt8ToFloat32(embedding.embedding);
           embeddingLength = embedding.embedding.originalDimensions;
         } else {

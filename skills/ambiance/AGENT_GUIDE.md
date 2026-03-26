@@ -5,9 +5,8 @@ Fast decision guide for agents using the `ambiance` CLI.
 ## Session Start
 
 1. `ambiance doctor --json`
-2. `ambiance embeddings status --json --project-path <path>`
-3. If embeddings are missing: `ambiance embeddings create --json --project-path <path> --force true`
-4. **Initial Orientation (IMPORTANT - Read This First)**:
+2. **Initial Orientation (IMPORTANT - Read This First)**:
+   - Embeddings are automatically created and refreshed by the `context` command when `--embeddings` flag is used. No manual setup needed.
    ```bash
    # Start with manifest for quick file/function overview
    ambiance manifest --exports-only --max-files 50 --format flat --json --project-path <path>
@@ -32,10 +31,10 @@ See **"Initial Project Discovery"** section below for multi-pass context strateg
 
 Use this order when embeddings/index are available:
 
-1. Semantic understanding first (default format, symbol-anchored query):
-   `ambiance context "<symbol-anchored query>" --json --project-path <path> --auto-sync`
-2. Line-number navigation second (only when you need jump targets):
-   `ambiance context "<query>" --format index --json --project-path <path> --auto-sync`
+1. Semantic understanding first (default enhanced format, symbol-anchored query):
+   `ambiance context "<symbol-anchored query>" --json --project-path <path> --embeddings`
+2. Compact navigation second (only when you need jump targets without code snippets):
+   `ambiance context "<query>" --format index --json --project-path <path> --embeddings`
 3. Structural confirmation third:
    `ambiance grep "<ast pattern>" --json --project-path <path>`
 4. Lexical detail fill-in last:
@@ -99,7 +98,7 @@ ambiance manifest --exports-only --max-files 50 --format flat --json --project-p
 #### 2. Backend Topology First
 ```bash
 ambiance context "python services main.py health_check scheduler loop run_ingestion_job run_generation_loop run_tracking_loop" \
-  --format index --json --project-path <path> --auto-sync
+  --format index --json --project-path <path> --embeddings
 ```
 
 **Why this works:**
@@ -177,7 +176,7 @@ Good orientation should give you:
 - Split into separate backend/frontend passes
 - Add entry point file names (`main.py`, `index.ts`)
 - Use runtime verbs (`run_`, `loop`)
-- Add `--auto-sync` flag
+- Add `--embeddings` flag
 - Run `manifest` first to see what's available
 
 **Recipe:** See `ambiance skill recipe orientation --json` for complete workflow
@@ -234,32 +233,26 @@ Examples:
 
 ## Context Format Choice
 
-- **Default `context`** (no `--format` flag): Focused, low-noise results organized by symbols and relationships. Best with specific symbol names.
-- **`--format index`**: File:line jump targets with confidence/relevance. More results but noisier.
+- **Default `context`** (no `--format` flag): Enhanced output with jump targets, code snippets, answer analysis, evidence, and next actions. Best starting point for most queries.
+- **`--format index`**: Same analysis but omits code snippets — compact file:line jump targets only.
 
 Format policy:
-1. **Default to `context` (no format flag)** for understanding what code does and how symbols relate.
-2. Use `--format index` when you specifically need line-number jump targets for navigation.
+1. **Default to `context` (no format flag)** for full analysis with code snippets.
+2. Use `--format index` when you need compact jump-target-only output for navigation.
 
-When using index mode, use `jumpTargets`, `byFile`, and `nextActions.openFiles` to decide where to run text search and edits.
+Use `jumpTargets`, `byFile`, and `nextActions.openFiles` to decide where to run text search and edits.
 
 ## Error Recovery
 
-- Embeddings not initialized:
-  `ambiance embeddings create --json --project-path <path> --force true`
-
-- Embeddings stale:
-  `ambiance context "<query>" --json --project-path <path> --auto-sync`
-  or `ambiance embeddings update --json --project-path <path>`
+- Embeddings not initialized or stale:
+  The `context` command automatically creates and refreshes embeddings when `--embeddings` is used.
+  For manual control: `ambiance embeddings create --json --project-path <path> --force true`
 
 ## Index Hygiene
 
-1. Check status first for deep investigations:
-   `ambiance embeddings status --json --project-path <path>`
-2. Prefer incremental freshness:
-   use `context --auto-sync` or `embeddings update` for routine changes.
-3. Use full rebuild only when needed:
-   `embeddings create --force true` only for migration/incompatible model/corruption scenarios.
+1. Embeddings are automatically managed by the `context` command when `--embeddings` is used (created if missing, refreshed if stale).
+2. Check status for deep investigations: `ambiance embeddings status --json --project-path <path>`
+3. Use full rebuild only when needed: `embeddings create --force true` only for migration/incompatible model/corruption scenarios.
 
 - If semantic results are weak:
   1. broaden `context` query

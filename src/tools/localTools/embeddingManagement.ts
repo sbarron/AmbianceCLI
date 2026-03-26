@@ -33,6 +33,7 @@ export const manageEmbeddingsTool = {
 - create: Generate or regenerate embeddings using the active model settings (projectPath required).
 - update: Update embeddings for specific files or changed files (projectPath required, files optional).
 - validate: Inspect stored embeddings for compatibility issues and integrity problems (projectPath required).
+- file_chunks: Show per-chunk metadata for one embedded file, including inferred chunking mode (projectPath + filePath required).
 - check_stale: Identify files that need re-indexing by comparing disk vs database timestamps (projectPath required, autoUpdate optional).
 
 **Project Management Actions**
@@ -44,6 +45,7 @@ export const manageEmbeddingsTool = {
 - Set action to choose the workflow (defaults to get_workspace if no projectPath provided).
 - Provide projectPath for workspace-level and embedding actions.
 - Use projectIdentifier for project-specific lookups (delete_project, project_details).
+- Use filePath with action="file_chunks" to inspect one file's chunk embeddings.
 - Optional: autoGenerate (for set_workspace), autoFix, batchSize, includeStats, maxFiles, excludePatterns, allowHiddenFolders.
 
 **Outputs**
@@ -65,6 +67,10 @@ export const manageEmbeddingsTool = {
       projectIdentifier: {
         type: 'string',
         description: 'Project ID, name, or path for project-level actions',
+      },
+      filePath: {
+        type: 'string',
+        description: 'Project-relative or absolute file path (required for file_chunks action)',
       },
       format: {
         type: 'string',
@@ -154,6 +160,11 @@ export const manageEmbeddingsTool = {
         type: 'boolean',
         description: 'Automatically update stale files (for check_stale action)',
         default: false,
+      },
+      quantization: {
+        type: 'string',
+        enum: ['turbo4', 'turbo2', 'int8', 'float32'],
+        description: 'Embedding quantization format (for create/update actions). If the requested format differs from stored embeddings, triggers a full re-index. Options: turbo4 (4-bit, recommended), turbo2 (2-bit, max compression), int8 (legacy 8-bit), float32 (no quantization).',
       },
     },
     required: [],

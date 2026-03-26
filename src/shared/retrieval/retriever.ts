@@ -19,7 +19,7 @@ import {
 import { logRetrievalTelemetry } from '../telemetry';
 import * as fs from 'fs';
 import * as path from 'path';
-import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding } from '../../local/quantization';
+import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding, isTurboQuantized, turboDequantize, TurboQuantizedEmbedding } from '../../local/quantization';
 
 export class SharedRetriever implements Retriever {
   private storage: LocalEmbeddingStorage;
@@ -656,12 +656,12 @@ export class SharedRetriever implements Retriever {
    * Calculate cosine similarity between two vectors (handles both quantized and float32)
    */
   private cosineSimilarity(
-    a: number[] | QuantizedEmbedding,
-    b: number[] | QuantizedEmbedding
+    a: number[] | QuantizedEmbedding | TurboQuantizedEmbedding,
+    b: number[] | QuantizedEmbedding | TurboQuantizedEmbedding
   ): number {
-    // Normalize both embeddings to float32 arrays
-    const aFloat32 = isQuantized(a) ? dequantizeInt8ToFloat32(a) : a;
-    const bFloat32 = isQuantized(b) ? dequantizeInt8ToFloat32(b) : b;
+    // Normalize all formats to float32 arrays
+    const aFloat32 = isTurboQuantized(a) ? turboDequantize(a) : isQuantized(a) ? dequantizeInt8ToFloat32(a) : a;
+    const bFloat32 = isTurboQuantized(b) ? turboDequantize(b) : isQuantized(b) ? dequantizeInt8ToFloat32(b) : b;
 
     if (aFloat32.length !== bFloat32.length) return 0;
 

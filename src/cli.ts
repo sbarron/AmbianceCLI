@@ -266,8 +266,8 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
       },
       {
         name: 'EMBEDDING_QUANTIZATION',
-        defaultValue: 'true',
-        description: 'Stores embeddings as int8 by default.',
+        defaultValue: 'turbo4',
+        description: 'Embedding quantization mode. Options: turbo4 (4-bit, recommended), turbo2 (2-bit, max compression), true/int8 (legacy 8-bit), false (no quantization).',
       },
       {
         name: 'EMBEDDING_QUOTAS',
@@ -608,7 +608,7 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log(
     '  packs                  Context pack workflows (create/list/get/delete/template/ui)'
   );
-  console.log('  embeddings             Embedding management and workspace configuration');
+  console.log('  embeddings             Embedding management and workspace configuration (default: turbo4 quantization)');
   console.log('  doctor                 Environment/readiness diagnostics');
   console.log('  skill                  Agent skill helpers (verify/list/workflow/recipe)');
   console.log('  migrate                Migration helpers (MCP -> CLI)');
@@ -699,21 +699,33 @@ function showCommandHelp(command: string): void {
       '---------------',
       'Generate semantic project context for a query.',
       '',
+      'Default format is "enhanced": returns jump targets, code snippets, answer',
+      'analysis, evidence, and next actions. Use --format index for compact output',
+      'without code snippets.',
+      '',
+      'When --embeddings is used, embeddings are automatically created if missing',
+      'and refreshed if stale before the query runs. No manual setup needed.',
+      '',
       'Usage:',
-      '  ambiance context "<query>" [--json] [--project-path <path>] [--max-tokens <n>] [--task-type <type>] [--auto-sync]',
+      '  ambiance context "<query>" [--json] [--project-path <path>] [--embeddings]',
       '',
       ...common,
-      '  --max-tokens <n>       Token budget for context assembly',
+      '  --max-tokens <n>       Token budget for context assembly (default: 3000)',
       '  --task-type <type>     Context focus (implement | review | understand)',
-      '  --max-similar-chunks <n>',
-      '  --auto-sync            Check/update stale embeddings before generating context',
-      '  --auto-sync-batch-size <n>',
-      '  --showmetadata         Show metadata block in structured output',
+      '  --max-similar-chunks <n>  Max embedding chunks to consider',
+      '  --auto-sync            Force stale-check even without --embeddings',
+      '  --auto-sync-batch-size <n>  Batch size for embedding sync',
+      '  --showmetadata         Include metadata block in output',
       '  --exclude-patterns a,b,c',
       '',
+      'Formats:',
+      '  (default)              Enhanced: jump targets + code snippets + evidence',
+      '  --format index         Jump targets only (no code snippets)',
+      '  --format system-map    Architecture overview',
+      '',
       'Examples:',
-      '  ambiance context "authentication flow" --json --project-path ./ --max-tokens 2400',
-      '  ambiance context "auth middleware" --json --project-path ./ --auto-sync',
+      '  ambiance context "authentication flow" --json --project-path ./ --embeddings',
+      '  ambiance context "auth middleware" --format index --json --project-path ./',
       '  ambiance context --query "request lifecycle" --json --task-type review',
     ],
     hints: [
@@ -854,14 +866,33 @@ function showCommandHelp(command: string): void {
       '  ambiance embeddings <action> [--json] [--project-path <path>]',
       '',
       'Actions:',
-      '  status | create | update | validate | check_stale | set_workspace | list_projects | ...',
+      '  status | create | update | validate | file_chunks | check_stale | set_workspace | list_projects | ...',
       '',
       ...common,
       '  --force true            Required for non-interactive embeddings create in JSON mode',
+      '  --file-path <path>      Required for file_chunks when not using positional file argument',
+      '  --quantization <mode>   Set embedding quantization format for create/update actions.',
+      '                          Options: turbo4 (4-bit, default), turbo2 (2-bit), int8 (legacy), float32 (none)',
+      '                          If the requested format differs from stored embeddings,',
+      '                          update will automatically trigger a full re-index.',
+      '',
+      'Quantization:',
+      '  New projects default to turbo4 (4-bit TurboQuant), which provides ~8x compression',
+      '  over float32 with >99% cosine similarity preservation. Existing projects keep their',
+      '  current format unless --quantization is explicitly passed to create or update.',
+      '',
+      '  To upgrade existing embeddings:',
+      '    ambiance embeddings update --quantization turbo4 --project-path ./',
+      '',
+      '  Env var: EMBEDDING_QUANTIZATION=turbo4|turbo2|int8|true|false (default: turbo4)',
       '',
       'Examples:',
       '  ambiance embeddings status --json --project-path ./',
+      '  ambiance embeddings file_chunks src/index.ts --json --project-path ./',
+      '  ambiance embeddings file_chunks --file-path src/index.ts --json --project-path ./',
       '  ambiance embeddings create --json --project-path ./ --force true',
+      '  ambiance embeddings update --quantization turbo4 --project-path ./',
+      '  ambiance embeddings create --quantization turbo2 --force true --project-path ./',
     ],
     packs: [
       'ambiance packs',
@@ -1010,7 +1041,7 @@ async function executeToolCommand(
         result = await handleSemanticCompact({
           query,
           projectPath: globalOptions.projectPath || await detectProjectPath(),
-          format: resolveToolFormat(globalOptions, 'structured'),
+          format: resolveToolFormat(globalOptions, 'enhanced'),
           ...parsedArgs,
         });
         break;
@@ -1687,6 +1718,7 @@ async function executeToolCommand(
         const action = (toolArgs.find(arg => !arg.startsWith('--')) ||
           'status') as ManageEmbeddingsAction;
         let projectIdentifier: string | undefined;
+        let filePathArg: string | undefined;
 
         const promptArgs = parseToolSpecificArgs(toolArgs, ['autoUpdate', 'force']);
         const skipConfirmation = promptArgs.force === true;
@@ -1700,6 +1732,19 @@ async function executeToolCommand(
             !toolArgs[actionIndex + 1].startsWith('--')
           ) {
             projectIdentifier = toolArgs[actionIndex + 1];
+            toolArgs.splice(actionIndex + 1, 1); // Remove the positional argument from toolArgs
+          }
+        }
+
+        // Extract file path for file_chunks as positional argument
+        if (action === 'file_chunks') {
+          const actionIndex = toolArgs.indexOf(action);
+          if (
+            actionIndex !== -1 &&
+            actionIndex + 1 < toolArgs.length &&
+            !toolArgs[actionIndex + 1].startsWith('--')
+          ) {
+            filePathArg = toolArgs[actionIndex + 1];
             toolArgs.splice(actionIndex + 1, 1); // Remove the positional argument from toolArgs
           }
         }
@@ -1725,21 +1770,14 @@ async function executeToolCommand(
           let fileCount = 'unknown';
           let estimatedTime = '2-10 minutes';
           try {
-            const { globby } = await import('globby');
-
-            const files = await globby(
-              [
-                '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
-              ],
-              {
-                cwd: projectPath,
-                ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**'],
-                onlyFiles: true,
-              }
+            const { analyzeProjectIndexableFiles } = await import(
+              './runtime/embeddings/projectManagement'
             );
 
-            fileCount = files.length.toString();
-            estimatedTime = estimateEmbeddingTime(files.length);
+            const scanResult = await analyzeProjectIndexableFiles(projectPath);
+
+            fileCount = scanResult.indexableFiles.toString();
+            estimatedTime = estimateEmbeddingTime(scanResult.indexableFiles || 100);
           } catch {
             // Use default estimate if file counting fails
             estimatedTime = '2-10 minutes';
@@ -1800,8 +1838,10 @@ async function executeToolCommand(
           'maxFixTime',
           'format',
           'files',
+          'filePath',
           'limit',
           'autoUpdate',
+          'quantization',
         ]);
 
         // Merge global options if not already parsed
@@ -1811,6 +1851,9 @@ async function executeToolCommand(
           globalOptions.excludePatterns !== undefined
         ) {
           mergedArgs.excludePatterns = globalOptions.excludePatterns;
+        }
+        if (filePathArg && mergedArgs.filePath === undefined) {
+          mergedArgs.filePath = filePathArg;
         }
 
         // Special handling for check_stale - show project path and confirm if autoUpdate

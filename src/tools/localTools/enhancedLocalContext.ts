@@ -30,6 +30,8 @@ export interface LocalContextRequest {
   astQueries?: AstQuery[];
   attackPlan?: 'auto' | 'init-read-write' | 'api-route' | 'error-driven' | 'auth';
   excludePatterns?: string[];
+  /** Pre-computed embedding similarity scores per file path (max similarity 0-1) */
+  embeddingScores?: Map<string, number>;
 }
 
 export interface LocalContextResponse {
@@ -420,9 +422,9 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
       extraCandidates.push(...dbExtras);
     }
 
-    // 5. Generate and rank candidates
+    // 5. Generate and rank candidates (with optional embedding scores)
     const allMatches = [...astMatches, ...extraCandidates];
-    const candidates = await rankCandidates(allMatches, indices, request.query, plan);
+    const candidates = await rankCandidates(allMatches, indices, request.query, plan, req.embeddingScores);
 
     // 6. Select top jump targets (respect maxSimilarChunks) with enhancements
     let jumpTargets = await selectJumpTargets(candidates, {
@@ -727,10 +729,11 @@ async function rankCandidates(
   matches: CandidateSymbol[],
   indices: ProjectContext,
   query: string,
-  plan: string
+  plan: string,
+  embeddingScores?: Map<string, number>
 ): Promise<CandidateSymbol[]> {
   const { rankCandidatesWithScoring } = await import('./candidateRanking');
-  const ranked = await rankCandidatesWithScoring(matches, indices, query, plan);
+  const ranked = await rankCandidatesWithScoring(matches, indices, query, plan, embeddingScores);
   return ranked.slice(0, 20); // Return top 20 candidates
 }
 

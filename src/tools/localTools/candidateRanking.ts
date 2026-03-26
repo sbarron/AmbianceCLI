@@ -30,6 +30,7 @@ export interface ScoreBreakdown {
   recencyBoost: number;
   contextBoost: number;
   domainBoost: number;
+  embeddingScore: number;
 }
 
 export interface ProjectContext {
@@ -51,12 +52,14 @@ export async function rankCandidatesWithScoring(
   candidates: CandidateSymbol[],
   projectContext: ProjectContext,
   query: string,
-  attackPlan: string
+  attackPlan: string,
+  embeddingScores?: Map<string, number>
 ): Promise<RankedCandidate[]> {
   logger.info('🎯 Ranking candidates', {
     candidateCount: candidates.length,
     query,
     attackPlan,
+    hasEmbeddingScores: !!embeddingScores && embeddingScores.size > 0,
   });
 
   if (candidates.length === 0) {
@@ -76,10 +79,11 @@ export async function rankCandidatesWithScoring(
 
   // Score each candidate
   const rankedCandidates: RankedCandidate[] = [];
+  const hasEmbeddings = !!embeddingScores && embeddingScores.size > 0;
 
   for (const candidate of candidates) {
-    const scoreBreakdown = calculateScoreBreakdown(candidate, scoringContext, callGraph);
-    const finalScore = calculateFinalScore(scoreBreakdown);
+    const scoreBreakdown = calculateScoreBreakdown(candidate, scoringContext, callGraph, embeddingScores);
+    const finalScore = calculateFinalScore(scoreBreakdown, hasEmbeddings);
 
     rankedCandidates.push({
       ...candidate,
@@ -121,7 +125,8 @@ export async function rankCandidatesWithScoring(
 function calculateScoreBreakdown(
   candidate: CandidateSymbol,
   context: ScoringContext,
-  callGraph: Map<string, string[]>
+  callGraph: Map<string, string[]>,
+  embeddingScores?: Map<string, number>
 ): ScoreBreakdown {
   // 1. Path Prior - boost based on file path relevance
   const pathPrior = calculatePathPrior(candidate, context);
@@ -144,6 +149,9 @@ function calculateScoreBreakdown(
   // 7. Domain Boost - domain-specific relevance
   const domainBoost = calculateDomainBoost(candidate, context);
 
+  // 8. Embedding Score - semantic similarity from vector embeddings
+  const embeddingScore = calculateEmbeddingScore(candidate, embeddingScores);
+
   return {
     pathPrior,
     keywordScore,
@@ -152,22 +160,37 @@ function calculateScoreBreakdown(
     recencyBoost,
     contextBoost,
     domainBoost,
+    embeddingScore,
   };
 }
 
 /**
- * Calculate final weighted score from breakdown
+ * Calculate final weighted score from breakdown.
+ * When embeddings are available, they get significant weight and keyword score is reduced,
+ * since embeddings capture semantic intent that keyword matching misses.
  */
-function calculateFinalScore(breakdown: ScoreBreakdown): number {
-  const weights = {
-    pathPrior: 0.15,
-    keywordScore: 0.25,
-    surfaceBoost: 0.2,
-    degreeBoost: 0.1,
-    recencyBoost: 0.05,
-    contextBoost: 0.15,
-    domainBoost: 0.1,
-  };
+function calculateFinalScore(breakdown: ScoreBreakdown, hasEmbeddings: boolean): number {
+  const weights = hasEmbeddings
+    ? {
+        pathPrior: 0.10,
+        keywordScore: 0.15,
+        surfaceBoost: 0.15,
+        degreeBoost: 0.08,
+        recencyBoost: 0.04,
+        contextBoost: 0.10,
+        domainBoost: 0.08,
+        embeddingScore: 0.30,
+      }
+    : {
+        pathPrior: 0.15,
+        keywordScore: 0.25,
+        surfaceBoost: 0.20,
+        degreeBoost: 0.10,
+        recencyBoost: 0.05,
+        contextBoost: 0.15,
+        domainBoost: 0.10,
+        embeddingScore: 0.0,
+      };
 
   return (
     breakdown.pathPrior * weights.pathPrior +
@@ -176,7 +199,8 @@ function calculateFinalScore(breakdown: ScoreBreakdown): number {
     breakdown.degreeBoost * weights.degreeBoost +
     breakdown.recencyBoost * weights.recencyBoost +
     breakdown.contextBoost * weights.contextBoost +
-    breakdown.domainBoost * weights.domainBoost
+    breakdown.domainBoost * weights.domainBoost +
+    breakdown.embeddingScore * weights.embeddingScore
   );
 }
 
@@ -232,25 +256,52 @@ function calculatePathPrior(candidate: CandidateSymbol, context: ScoringContext)
 }
 
 /**
- * Score based on keyword matching
+ * Score based on keyword matching.
+ * Uses both individual tokens and bigram/phrase tokens for better precision.
+ * Bigram matches (e.g., "semanticCompact" matching "semantic" + "compact") score higher
+ * than individual word matches to reduce false positives.
  */
 function calculateKeywordScore(candidate: CandidateSymbol, context: ScoringContext): number {
   const symbolName = candidate.symbol.toLowerCase();
   const fileName = path.basename(candidate.file).toLowerCase();
+  const fileStem = fileName.replace(/\.[^.]+$/, ''); // remove extension
 
   let score = 0;
-  let matches = 0;
+  let singleMatches = 0;
+  let bigramMatches = 0;
 
-  // Check symbol name against query tokens
+  // Separate single-word tokens from bigram tokens
+  const singleTokens: string[] = [];
+  const bigramTokens: string[] = [];
   for (const token of context.queryTokens) {
-    const tokenLower = token.toLowerCase();
-    if (symbolName.includes(tokenLower)) {
-      score += 0.3;
-      matches++;
+    if (token.includes('_') || /[a-z][A-Z]/.test(token) || token.length > 12) {
+      bigramTokens.push(token.toLowerCase());
+    } else {
+      singleTokens.push(token.toLowerCase());
     }
-    if (fileName.includes(tokenLower)) {
+  }
+
+  // Check symbol name against single-word tokens
+  for (const token of singleTokens) {
+    if (symbolName.includes(token)) {
+      score += 0.25;
+      singleMatches++;
+    }
+    if (fileStem.includes(token)) {
       score += 0.15;
-      matches++;
+      singleMatches++;
+    }
+  }
+
+  // Bigram/phrase matches are worth more (higher precision)
+  for (const bigram of bigramTokens) {
+    if (symbolName.includes(bigram)) {
+      score += 0.45;
+      bigramMatches++;
+    }
+    if (fileStem.includes(bigram)) {
+      score += 0.3;
+      bigramMatches++;
     }
   }
 
@@ -258,16 +309,16 @@ function calculateKeywordScore(candidate: CandidateSymbol, context: ScoringConte
   for (const keyword of context.domainKeywords) {
     if (symbolName.includes(keyword.toLowerCase())) {
       score += 0.2;
-      matches++;
+      singleMatches++;
     }
   }
 
-  // Bonus for exact or close matches
-  if (matches > 0) {
-    const queryText = context.queryTokens.join(' ').toLowerCase();
-    if (symbolName.includes(queryText)) {
-      score += 0.4;
-    }
+  // Bonus for multi-token coverage (file/symbol matches several query words)
+  const totalMatches = singleMatches + bigramMatches;
+  if (totalMatches >= 3) {
+    score += 0.3; // Strong multi-word match
+  } else if (totalMatches >= 2) {
+    score += 0.15;
   }
 
   // Topic-aware boosts: API and Components
@@ -280,7 +331,6 @@ function calculateKeywordScore(candidate: CandidateSymbol, context: ScoringConte
     }
   }
   if (context.attackPlan === 'understand' || context.attackPlan === 'auto') {
-    // If query mentions components/UI, lightly boost component files
     const qt = context.queryTokens.join(' ');
     if (/(component|components|ui|page|jsx|sfc)/i.test(qt)) {
       if (/\.(tsx|jsx)$/i.test(candidate.file) || /\/components\//i.test(candidate.file)) {
@@ -472,6 +522,48 @@ function calculateDomainBoost(candidate: CandidateSymbol, context: ScoringContex
   return Math.min(score, 1.0);
 }
 
+/**
+ * Score based on embedding vector similarity.
+ * Uses pre-computed per-file similarity scores from the embedding store.
+ */
+function calculateEmbeddingScore(
+  candidate: CandidateSymbol,
+  embeddingScores?: Map<string, number>
+): number {
+  if (!embeddingScores || embeddingScores.size === 0) {
+    return 0;
+  }
+
+  // Try exact file path match first
+  let similarity = embeddingScores.get(candidate.file);
+
+  // Try normalized path variants if exact match fails
+  if (similarity === undefined) {
+    const normalized = candidate.file.replace(/\\/g, '/');
+    similarity = embeddingScores.get(normalized);
+  }
+
+  if (similarity === undefined) {
+    // Try matching by filename suffix (relative vs absolute paths)
+    for (const [filePath, score] of embeddingScores) {
+      const normalizedKey = filePath.replace(/\\/g, '/');
+      const normalizedCandidate = candidate.file.replace(/\\/g, '/');
+      if (normalizedKey.endsWith(normalizedCandidate) || normalizedCandidate.endsWith(normalizedKey)) {
+        similarity = score;
+        break;
+      }
+    }
+  }
+
+  if (similarity === undefined) {
+    return 0;
+  }
+
+  // Similarity is already 0-1 from cosine similarity; scale for scoring
+  // Apply a slight curve to emphasize high-similarity results
+  return Math.min(similarity * 1.2, 1.0);
+}
+
 // ===== UTILITY FUNCTIONS =====
 
 /**
@@ -548,20 +640,58 @@ function getDomainKeywordsForPlan(plan: string): string[] {
 }
 
 /**
- * Tokenize query into searchable terms
+ * Tokenize query into searchable terms.
+ * Produces both individual words AND meaningful bigrams/phrases so that
+ * queries like "context command" match the compound concept, not just
+ * every file containing "context" or "command" individually.
  */
 function tokenizeQuery(query: string): string[] {
-  // Split on common delimiters and filter meaningful words
-  const tokens = query
+  const STOPWORDS = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were',
+    'be', 'been', 'being', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+    'by', 'from', 'it', 'its', 'this', 'that', 'my', 'your',
+  ]);
+
+  // Keep question words as weak signals rather than removing entirely
+  const WEAK_WORDS = new Set(['how', 'does', 'can', 'will', 'what', 'where', 'when', 'why', 'which']);
+
+  // Split into raw words
+  const rawWords = query
     .toLowerCase()
     .split(/[\s\-_\.\,\?\!]+/)
-    .filter(token => token.length > 2)
-    .filter(
-      token =>
-        !['and', 'the', 'how', 'does', 'can', 'will', 'what', 'where', 'when'].includes(token)
-    );
+    .filter(w => w.length > 1);
 
-  return [...new Set(tokens)]; // Remove duplicates
+  // Meaningful words (not stopwords, length > 2)
+  const meaningful = rawWords.filter(
+    w => w.length > 2 && !STOPWORDS.has(w) && !WEAK_WORDS.has(w)
+  );
+
+  // Build bigrams from consecutive meaningful words for phrase matching
+  // e.g., "context command" from "how does the context command build its response"
+  const bigrams: string[] = [];
+  for (let i = 0; i < rawWords.length - 1; i++) {
+    const a = rawWords[i];
+    const b = rawWords[i + 1];
+    // Only make bigrams from non-stopword pairs
+    if (a.length > 2 && b.length > 2 && !STOPWORDS.has(a) && !STOPWORDS.has(b)) {
+      bigrams.push(`${a}${b}`);       // concatenated: "contextcommand"
+      bigrams.push(`${a}_${b}`);      // underscore: "context_command"
+      bigrams.push(`${a}${b[0].toUpperCase()}${b.slice(1)}`); // camelCase: "contextCommand"
+    }
+  }
+
+  // Also generate camelCase split tokens from meaningful words
+  // e.g., "handleSemanticCompact" should match query "semantic compact"
+  const camelTokens: string[] = [];
+  for (const word of meaningful) {
+    // If the word itself looks like camelCase, split it
+    const parts = word.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(' ');
+    if (parts.length > 1) {
+      camelTokens.push(...parts.filter(p => p.length > 2));
+    }
+  }
+
+  return [...new Set([...meaningful, ...bigrams, ...camelTokens])];
 }
 
 /**

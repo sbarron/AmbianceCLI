@@ -1,9 +1,9 @@
 {
   "name": "context",
-  "description": "Generate compact code context for a query.",
+  "description": "Generate semantic project context for a query. Default format is 'enhanced' which returns jump targets, code snippets, answer analysis, evidence, and next actions. Embeddings are automatically created if missing and refreshed if stale when --embeddings flag is used.",
   "defaults": {
-    "maxTokens": 2000,
-    "format": "json"
+    "maxTokens": 3000,
+    "format": "enhanced"
   },
   "command": "context",
   "args": [
@@ -12,50 +12,66 @@
     "--project-path",
     "${projectPath}",
     "--max-tokens",
-    "${maxTokens}"
+    "${maxTokens}",
+    "--embeddings"
   ],
   "optionalArgs": [
-    "--auto-sync",
-    "--auto-sync-batch-size <n>"
+    "--format <enhanced|index|system-map>",
+    "--task-type <understand|implement|review>",
+    "--auto-sync-batch-size <n>",
+    "--exclude-patterns <a,b,c>",
+    "--no-embeddings"
   ],
   "outputSchema": {
-    "json_format": {
-      "compactedContent": "string - markdown-formatted code summaries",
-      "metadata": "object - processing stats and compression ratio",
-      "usage": "string - token usage summary"
+    "enhanced_format": {
+      "content": "string - markdown-formatted analysis (query analysis, key locations, code snippets, next actions, evidence)",
+      "compactedContent": "string - same as content (for backward compatibility)",
+      "usage": "string - token usage summary",
+      "enhanced": "boolean - true when enhanced pipeline was used",
+      "embeddingsUsed": "boolean - true when embedding similarity influenced ranking",
+      "jumpTargets": "array - code locations with file, symbol, start/end lines, confidence, relevance, why reasons, and snippet",
+      "byFile": "object - jump targets grouped by file path",
+      "answerDraft": "string - deterministic answer summary from template system",
+      "nextActions": "object - { mode, openFiles, checks } suggested next steps",
+      "evidence": "array - symbol@file:line references"
     },
     "index_format": {
+      "content": "string - same as enhanced but without code snippets section",
       "jumpTargets": "array - code locations with file:line, confidence, relevance, and snippet",
-      "byFile": "object - jump targets grouped by file path for easier navigation",
+      "byFile": "object - jump targets grouped by file path",
       "answerDraft": "string - quick summary text",
       "nextActions": "object - suggested files to examine and verification commands",
-      "evidence": "array - symbol@file:line references",
-      "metadata": "object - processing stats and roleDistribution counts"
+      "evidence": "array - symbol@file:line references"
     }
   },
   "formats": [
     {
-      "flag": "--format json",
-      "purpose": "Semantic compression for LLM context",
-      "returns": "Compacted code summaries with compression stats",
-      "useCases": ["Minimize tokens", "Build LLM prompts", "Code summaries"]
+      "flag": "(default, no --format flag)",
+      "purpose": "Full enhanced analysis with code snippets",
+      "returns": "Jump targets, code snippets, answer analysis, evidence, and next actions",
+      "useCases": ["Understand code", "Implementation prep", "Code review", "Architecture analysis"]
     },
     {
       "flag": "--format index",
-      "purpose": "Code navigation with jump points",
-      "returns": "Structured locations with file:line, confidence, and next actions",
-      "useCases": ["IDE integration", "Agent navigation", "Jump to definition"]
+      "purpose": "Compact navigation without code snippets",
+      "returns": "Jump target locations only (file:line with confidence and relevance)",
+      "useCases": ["IDE navigation", "Agent jump-to-definition", "Broad reference sweeps"]
+    },
+    {
+      "flag": "--format system-map",
+      "purpose": "Architecture overview using shared retriever",
+      "returns": "System map with coverage metrics",
+      "useCases": ["Architecture overview", "System topology"]
     }
   ],
   "notes": [
-    "Requires embeddings for best results (falls back to text search)",
-    "Query strategy: use semantic anchor clusters (keyword-dense phrases), not conversational questions",
-    "Target symbols: include technical identifiers (e.g., Supabase, Puppeteer, cosineSimilarity) with domain keywords",
-    "Use --task-type for implementation/review-focused context",
-    "Use --format index for navigation, --format json for context compression",
-    "Index format returns confidence scores (0.9=exports, 0.7=operations)",
-    "Higher maxTokens = more complete but slower and costlier",
-    "Recommended routing (embedding-enabled): context --format index first, then AST grep, then native lexical search for detail fill-in",
-    "Use --auto-sync to run stale-index detection and inline updates before context generation"
+    "Default format is 'enhanced' — returns jump targets, code snippets, evidence, and next actions",
+    "Embeddings are automatically created if missing and refreshed if stale when --embeddings is used",
+    "No manual embedding setup needed — just pass --embeddings and the context command handles the lifecycle",
+    "Query strategy: use symbol-anchored queries (concrete function/class names), not conversational questions",
+    "Use --format index for compact jump-target-only output without code snippets",
+    "Embedding similarity scores are fed into candidate ranking when available, improving result relevance",
+    "Higher maxTokens = more complete code snippets in output",
+    "Use --task-type to focus analysis (understand, implement, review)"
   ]
 }
