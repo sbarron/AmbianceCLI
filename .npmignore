@@ -1,11 +1,37 @@
-demo/scenario-*
+# Source (consumers only need dist/)
+src/
 tests/
 scripts/
+demo/scenario-*
+
+# Config & dev tooling
 .github/
 .vscode/
+.claude/
+tsconfig*.json
+jest*.config.*
+.eslintrc*
+.eslint*
+.prettier*
 *.log
+*.ps1
+*.bat
+*.tgz
 .build-lock
 .DS_Store
+.env*
+.mcp.json
 
+# Stray dev files
+debug_output.txt
+test-glob.js
 test-storage/
 .eslintcache
+coverage/
+
+# Docs shipped via README only
+CHANGELOG.md
+CLAUDE.md
+QWEN.md
+*.md
+!README.md
