@@ -32,6 +32,19 @@ export interface LocalContextRequest {
   excludePatterns?: string[];
   /** Pre-computed embedding similarity scores per file path (max similarity 0-1) */
   embeddingScores?: Map<string, number>;
+  /** Ranked embedding chunks retained with their source locations and symbols. */
+  semanticMatches?: SemanticChunkMatch[];
+}
+
+export interface SemanticChunkMatch {
+  filePath: string;
+  similarity: number;
+  content: string;
+  startLine?: number;
+  endLine?: number;
+  symbols?: string[];
+  type?: 'code' | 'comment' | 'docstring' | 'import' | 'export';
+  semanticRank: number;
 }
 
 export interface LocalContextResponse {
@@ -79,11 +92,15 @@ export interface ContextMetadata {
   bundleTokens: number;
   processingTimeMs: number;
   roleDistribution?: Record<string, number>; // Count of symbols by role
+  retrievalStrategy?: 'deterministic' | 'hybrid-symbol' | 'hybrid-concept';
+  semanticCandidates?: number;
+  moduleCoverage?: number;
 }
 
 // ===== AST QUERY DSL =====
 
 export type AstQuery =
+  | { kind: 'symbol'; name: string | RegExp }
   | { kind: 'import'; source: string | RegExp; importName?: string | RegExp }
   | { kind: 'export'; name: string | RegExp }
   | { kind: 'call'; callee: string | RegExp; inFiles?: string[] }
@@ -247,13 +264,41 @@ export interface CandidateSymbol {
   score: number;
   reasons: string[];
   role?: string;
+  semanticRank?: number;
 }
 
 export interface ScoringContext {
   queryTokens: string[];
+  explicitSymbolTokens: Set<string>;
   attackPlan: string;
   domainKeywords: string[];
   projectIndices: any; // From project_hints
+}
+
+/**
+ * Extract tokens that look intentionally code-shaped. Ordinary prose words
+ * must not become hard ranking anchors merely because a project happens to
+ * contain a symbol named `output`, `context`, or `token`.
+ */
+export function extractExplicitSymbolTokens(query: string): Set<string> {
+  const tokens = query.match(/[A-Za-z_$][A-Za-z0-9_$./\\-]*/g) || [];
+  const explicit = new Set<string>();
+
+  for (const token of tokens) {
+    const codeShaped =
+      /[a-z0-9][A-Z]/.test(token) ||
+      /[_$]/.test(token) ||
+      /[./\\]/.test(token) ||
+      /^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$/.test(token);
+    if (!codeShaped) continue;
+
+    const normalized = token.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (normalized.length >= 3) {
+      explicit.add(normalized);
+    }
+  }
+
+  return explicit;
 }
 
 // ===== TOPIC DETECTION & STOPLISTS =====
@@ -406,8 +451,22 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
       file => !isExcludedPath(file.relPath, excludeMatchers)
     );
 
-    // 4. Run AST queries to find matches
-    const astMatches = await runAstQueries(filteredFiles, dslQueries);
+    // 4. Run exact symbol queries across the full filtered file set before broader capped AST search.
+    const exactSymbolQueries = dslQueries.filter(
+      (query): query is Extract<AstQuery, { kind: 'symbol' }> => query.kind === 'symbol'
+    );
+    const exactSymbolMatches =
+      exactSymbolQueries.length > 0
+        ? await runAstQueries(filteredFiles, exactSymbolQueries, filteredFiles.length)
+        : [];
+
+    // 4.1 Run broader AST queries to find related matches. A 100-file prefix
+    // created ordering-dependent blind spots in medium repositories, so scan a
+    // bounded but substantially wider structural frontier.
+    const astMatches = [
+      ...exactSymbolMatches,
+      ...(await runAstQueries(filteredFiles, dslQueries, Math.min(filteredFiles.length, 300))),
+    ];
 
     // 4.5 Family/topic-aware detectors beyond generic AST (no embeddings)
     const extraCandidates: CandidateSymbol[] = [];
@@ -422,9 +481,25 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
       extraCandidates.push(...dbExtras);
     }
 
+    // 4.7 Add embeddings as primary semantic candidates. Prefer the actual
+    // chunk locations; retain the file-level fallback for older callers.
+    if (request.semanticMatches && request.semanticMatches.length > 0) {
+      const embeddingExtras = gatherSemanticChunkCandidates(filteredFiles, request.semanticMatches);
+      extraCandidates.push(...embeddingExtras);
+    } else if (request.embeddingScores && request.embeddingScores.size > 0) {
+      const embeddingExtras = gatherEmbeddingFileCandidates(filteredFiles, request.embeddingScores);
+      extraCandidates.push(...embeddingExtras);
+    }
+
     // 5. Generate and rank candidates (with optional embedding scores)
     const allMatches = [...astMatches, ...extraCandidates];
-    const candidates = await rankCandidates(allMatches, indices, request.query, plan, req.embeddingScores);
+    const candidates = await rankCandidates(
+      allMatches,
+      indices,
+      request.query,
+      plan,
+      req.embeddingScores
+    );
 
     // 6. Select top jump targets (respect maxSimilarChunks) with enhancements
     let jumpTargets = await selectJumpTargets(candidates, {
@@ -489,6 +564,21 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     });
 
     const processingTimeMs = Date.now() - startTime;
+    const semanticCandidateCount = allMatches.filter(
+      candidate => candidate.kind === 'embedding'
+    ).length;
+    const hasEmbeddings = semanticCandidateCount > 0;
+    const retrievalStrategy: ContextMetadata['retrievalStrategy'] = !hasEmbeddings
+      ? 'deterministic'
+      : extractExplicitSymbolTokens(request.query).size > 0
+        ? 'hybrid-symbol'
+        : 'hybrid-concept';
+    const moduleCoverage = new Set(
+      jumpTargets.map(target => {
+        const parts = getRelativePath(target.file).replace(/\\/g, '/').split('/');
+        return parts.slice(0, Math.min(parts.length, 2)).join('/');
+      })
+    ).size;
 
     // Calculate role distribution
     const roleDistribution: Record<string, number> = {};
@@ -523,6 +613,9 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
         bundleTokens: miniBundle.reduce((sum, item) => sum + estimateTokensShared(item.snippet), 0),
         processingTimeMs,
         roleDistribution,
+        retrievalStrategy,
+        semanticCandidates: semanticCandidateCount,
+        moduleCoverage,
       },
       llmBundle,
     };
@@ -695,7 +788,7 @@ function chooseAttackPlan(plan: string, query: string): string {
   // Find highest scoring plan
   const topPlan = Object.entries(planScores).sort(([, a], [, b]) => b - a)[0][0];
 
-  return planScores[topPlan as keyof typeof planScores] > 0 ? topPlan : 'init-read-write';
+  return planScores[topPlan as keyof typeof planScores] > 0 ? topPlan : 'auto';
 }
 
 function buildDslQueriesForPlan(
@@ -712,6 +805,7 @@ function buildDslQueriesForPlan(
   // Add dynamic function/symbol queries based on query content
   for (const word of queryWords) {
     if (word.length > 3 && !['the', 'and', 'how', 'does', 'what', 'when', 'where'].includes(word)) {
+      dynamicQueries.push({ kind: 'symbol', name: new RegExp(word, 'i') });
       dynamicQueries.push({ kind: 'export', name: new RegExp(word, 'i') });
       dynamicQueries.push({ kind: 'call', callee: new RegExp(word, 'i') });
     }
@@ -720,9 +814,13 @@ function buildDslQueriesForPlan(
   return [...planQueries, ...dynamicQueries, ...userQueries];
 }
 
-async function runAstQueries(files: FileInfo[], queries: AstQuery[]): Promise<CandidateSymbol[]> {
+async function runAstQueries(
+  files: FileInfo[],
+  queries: AstQuery[],
+  maxFiles: number = 100
+): Promise<CandidateSymbol[]> {
   const { runAstQueriesOnFiles } = await import('./astQueryEngine');
-  return runAstQueriesOnFiles(files, queries, 100);
+  return runAstQueriesOnFiles(files, queries, maxFiles);
 }
 
 async function rankCandidates(
@@ -752,8 +850,10 @@ async function selectJumpTargets(
     return true;
   });
 
-  // 2. Take top N after deduplication
-  const topCandidates = deduplicated.slice(0, options.max);
+  // 2. Resolve a small amount of headroom. Different candidate generators can
+  // describe the same location with line numbers or byte offsets, so their
+  // identities may only converge after range resolution.
+  const topCandidates = deduplicated.slice(0, Math.min(deduplicated.length, options.max * 2));
 
   // 3. Create jump targets with enhancements
   const targets = await Promise.all(
@@ -792,7 +892,41 @@ async function selectJumpTargets(
     })
   );
 
-  return targets;
+  return deduplicateJumpTargets(targets).slice(0, options.max);
+}
+
+/**
+ * Collapse targets that resolve to the same agent-visible location. Keeping
+ * this boundary deduplicated avoids spending context tokens on repeated
+ * snippets when AST and index candidates use different coordinate systems.
+ */
+export function deduplicateJumpTargets(targets: JumpTarget[]): JumpTarget[] {
+  const deduplicated: JumpTarget[] = [];
+  const indexByIdentity = new Map<string, number>();
+
+  for (const target of targets) {
+    const identity = [
+      path.normalize(target.file).toLowerCase(),
+      target.symbol.trim().toLowerCase(),
+      target.start ?? 0,
+    ].join(':');
+    const existingIndex = indexByIdentity.get(identity);
+
+    if (existingIndex === undefined) {
+      indexByIdentity.set(identity, deduplicated.length);
+      deduplicated.push({ ...target, why: [...target.why] });
+      continue;
+    }
+
+    const existing = deduplicated[existingIndex];
+    existing.end = Math.max(existing.end ?? existing.start ?? 0, target.end ?? target.start ?? 0);
+    existing.confidence = Math.max(existing.confidence, target.confidence);
+    existing.relevance = Math.max(existing.relevance ?? 0, target.relevance ?? 0);
+    existing.why = [...new Set([...existing.why, ...target.why])];
+    existing.snippet = existing.snippet || target.snippet;
+  }
+
+  return deduplicated;
 }
 
 async function resolveCandidateLineRange(
@@ -1274,6 +1408,100 @@ async function gatherDbSchemaCandidates(files: FileInfo[]): Promise<CandidateSym
         reasons: ['db:schema:path'],
         role: 'schema',
       } as CandidateSymbol);
+    }
+  }
+  return results;
+}
+
+export function gatherSemanticChunkCandidates(
+  files: FileInfo[],
+  semanticMatches: SemanticChunkMatch[]
+): CandidateSymbol[] {
+  const results: CandidateSymbol[] = [];
+  const seen = new Set<string>();
+  const perFile = new Map<string, number>();
+
+  for (const match of [...semanticMatches].sort(
+    (a, b) => a.semanticRank - b.semanticRank || b.similarity - a.similarity
+  )) {
+    if (match.similarity < 0.05) continue;
+
+    const normalizedKey = match.filePath.replace(/\\/g, '/').toLowerCase();
+    const matchedFile = files.find(file => {
+      const absPath = file.absPath.replace(/\\/g, '/').toLowerCase();
+      const relPath = file.relPath.replace(/\\/g, '/').toLowerCase();
+      return (
+        absPath === normalizedKey ||
+        relPath === normalizedKey ||
+        normalizedKey.endsWith(`/${relPath}`) ||
+        absPath.endsWith(`/${normalizedKey}`)
+      );
+    });
+    if (!matchedFile) continue;
+
+    const fileCount = perFile.get(matchedFile.absPath) || 0;
+    if (fileCount >= 3) continue;
+
+    const start = Math.max(1, match.startLine || 1);
+    const end = Math.max(start, match.endLine || start);
+    const symbol = match.symbols?.find(value => value.trim().length > 0) || '[Semantic Chunk]';
+    const identity = `${matchedFile.absPath.toLowerCase()}:${start}:${end}:${symbol.toLowerCase()}`;
+    if (seen.has(identity)) continue;
+
+    seen.add(identity);
+    perFile.set(matchedFile.absPath, fileCount + 1);
+    results.push({
+      file: matchedFile.absPath,
+      symbol,
+      start,
+      end,
+      kind: 'embedding',
+      score: match.similarity,
+      reasons: [
+        `semantic chunk rank: ${match.semanticRank}`,
+        `semantic similarity: ${Math.round(match.similarity * 100)}%`,
+      ],
+      role: `semantic:${match.type || 'code'}`,
+      semanticRank: match.semanticRank,
+    });
+  }
+
+  return results;
+}
+
+function gatherEmbeddingFileCandidates(
+  files: FileInfo[],
+  embeddingScores: Map<string, number>
+): CandidateSymbol[] {
+  const results: CandidateSymbol[] = [];
+
+  // Sort the embedding scores to get the top matches
+  const sortedScores = Array.from(embeddingScores.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 50); // Take top 50 files
+
+  for (const [filePath, score] of sortedScores) {
+    if (score < 0.15) continue; // Minimum relevance threshold
+
+    const normalizedKey = filePath.replace(/\\/g, '/');
+    const matchedFile = files.find(
+      f =>
+        f.absPath === filePath ||
+        f.relPath.replace(/\\/g, '/') === normalizedKey ||
+        normalizedKey.endsWith(f.relPath.replace(/\\/g, '/'))
+    );
+
+    if (matchedFile) {
+      results.push({
+        file: matchedFile.absPath,
+        symbol: '[Semantic File]',
+        start: 1,
+        end: 1,
+        kind: 'embedding',
+        score: score,
+        reasons: [`Semantic similarity: ${Math.round(score * 100)}%`],
+        role: 'semantic:file',
+      });
     }
   }
   return results;

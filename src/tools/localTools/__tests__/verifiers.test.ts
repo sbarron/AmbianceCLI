@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { detectDatabaseEngine, collectDbEvidence } from '../../utils/dbEvidence';
+import { detectDatabaseEngine, collectDbEvidence } from '../utils/dbEvidence';
 import { FileInfo } from '../../../core/compactor/fileDiscovery';
 
 // Mock implementation of extractRoutesFromContent for testing

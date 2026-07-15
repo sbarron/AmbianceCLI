@@ -187,7 +187,9 @@ describe('AST-Grep Pattern Validation', () => {
     test('should suggest metavariables for class patterns', () => {
       const result = validateAstGrepPattern('class Test { constructor() {} }');
       expect(result.isValid).toBe(true);
-      expect(result.suggestions).toContain('Use $NAME for the class name');
+      expect(
+        result.suggestions.some(suggestion => suggestion.includes('Use $NAME for the class name'))
+      ).toBe(true);
     });
 
     test('should suggest metavariables for import patterns', () => {

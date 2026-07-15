@@ -10,13 +10,16 @@
       "command": "context",
       "args": [
         "${query}",
+        "--format",
+        "index",
+        "--embeddings",
         "--json",
         "--project-path",
         "${projectPath}",
         "--task-type",
         "review",
         "--max-tokens",
-        "2000"
+        "1600"
       ]
     }
   ]

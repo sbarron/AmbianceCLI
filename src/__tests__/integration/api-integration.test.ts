@@ -25,8 +25,8 @@ jest.mock('sqlite3', () => ({
 
 // Mock the logger to capture output
 jest.mock('../../utils/logger');
-// Mock @xenova/transformers
-jest.mock('@xenova/transformers');
+// Mock @huggingface/transformers
+jest.mock('@huggingface/transformers');
 
 describe('Ambiance MCP API Integration', () => {
   let mockServer: MockApiServer;

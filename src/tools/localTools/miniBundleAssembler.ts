@@ -192,9 +192,24 @@ function extractSnippetWithContext(
   endPos: number,
   contextLines: number
 ): string {
-  // Convert byte positions to line numbers (approximate)
-  let startLine = Math.max(0, Math.floor(startPos / 80) - contextLines);
-  let endLine = Math.min(lines.length - 1, Math.floor(endPos / 80) + contextLines);
+  let startLine: number;
+  let endLine: number;
+
+  // Jump targets from enhanced local context are usually already line-based.
+  // Older callers may still pass byte offsets, so keep the offset fallback.
+  const looksLineBased =
+    startPos >= 1 &&
+    startPos <= lines.length + 1 &&
+    endPos >= startPos &&
+    endPos <= lines.length + 1;
+
+  if (looksLineBased) {
+    startLine = Math.max(0, startPos - 1 - contextLines);
+    endLine = Math.min(lines.length - 1, endPos - 1 + contextLines);
+  } else {
+    startLine = Math.max(0, Math.floor(startPos / 80) - contextLines);
+    endLine = Math.min(lines.length - 1, Math.floor(endPos / 80) + contextLines);
+  }
 
   // If positions are 0, try to find symbol by scanning lines
   if (startPos === 0 && endPos === 0) {

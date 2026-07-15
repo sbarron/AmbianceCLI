@@ -1,6 +1,8 @@
 import { generate } from '../providerAdapter';
 
-let mockRegistry: {
+// `jest.mock` factories are hoisted; `var` avoids the temporal dead zone here.
+// eslint-disable-next-line no-var
+var mockRegistry: {
   chatCreate: jest.Mock;
   responsesCreate: jest.Mock;
   responsesStream: jest.Mock;

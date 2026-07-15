@@ -670,7 +670,10 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
         };
         return {
           ...unformattedFallbackResult,
-          content: formatAstGrepOutput(unformattedFallbackResult.matches, unformattedFallbackResult.pattern),
+          content: formatAstGrepOutput(
+            unformattedFallbackResult.matches,
+            unformattedFallbackResult.pattern
+          ),
           success: true,
         };
       } catch (fallbackError) {
@@ -784,7 +787,13 @@ async function executeRipgrepFallback(options: {
 }
 
 async function executeInProcessTextFallback(
-  options: { pattern: string; projectPath: string; maxMatches: number; language?: string; excludePatterns?: string[] },
+  options: {
+    pattern: string;
+    projectPath: string;
+    maxMatches: number;
+    language?: string;
+    excludePatterns?: string[];
+  },
   literal: string
 ): Promise<AstGrepResult> {
   const files = await fs.readdir(options.projectPath, { recursive: true } as any).catch(() => []);
@@ -1043,9 +1052,9 @@ export async function executeAstGrep(options: {
             args: [
               '-Command',
               'npx ast-grep ' +
-              cliArgs
-                .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
-                .join(' '),
+                cliArgs
+                  .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
+                  .join(' '),
             ],
             options: { shell: false },
           },
@@ -1166,7 +1175,7 @@ export async function executeAstGrep(options: {
           reject(
             new Error(
               'Failed to parse ast-grep output: ' +
-              (parseError instanceof Error ? parseError.message : String(parseError))
+                (parseError instanceof Error ? parseError.message : String(parseError))
             )
           );
         }
@@ -1229,12 +1238,12 @@ export async function executeAstGrep(options: {
         reject(
           new Error(
             'Failed to spawn ast-grep (' +
-            executionMethod +
-            '): ' +
-            processError.message +
-            ' (code: ' +
-            (processError as any).code +
-            '). Make sure @ast-grep/cli is installed and accessible.'
+              executionMethod +
+              '): ' +
+              processError.message +
+              ' (code: ' +
+              (processError as any).code +
+              '). Make sure @ast-grep/cli is installed and accessible.'
           )
         );
       });
@@ -1346,13 +1355,16 @@ function formatAstGrepOutput(matches: AstGrepMatch[], pattern: string): string {
     return `No matches found for pattern: ${pattern}`;
   }
 
-  const groupedByFile = matches.reduce((acc, match) => {
-    if (!acc[match.file]) {
-      acc[match.file] = [];
-    }
-    acc[match.file].push(match);
-    return acc;
-  }, {} as Record<string, AstGrepMatch[]>);
+  const groupedByFile = matches.reduce(
+    (acc, match) => {
+      if (!acc[match.file]) {
+        acc[match.file] = [];
+      }
+      acc[match.file].push(match);
+      return acc;
+    },
+    {} as Record<string, AstGrepMatch[]>
+  );
 
   const sections: string[] = [];
   sections.push(`## Grep Results For: \`${pattern}\` (${matches.length} matches)`);
@@ -1372,7 +1384,6 @@ function formatAstGrepOutput(matches: AstGrepMatch[], pattern: string): string {
 
   return sections.join('\\n').trim();
 }
-
 
 /**
  * Filter matches by additional exclude patterns

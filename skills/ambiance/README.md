@@ -33,33 +33,28 @@ Versioned skill templates for CLI-first agent workflows.
 
 ## Prerequisites
 
-Before using semantic commands (`context`, `debug`), ensure the environment is ready:
+Before the first investigation or when the environment changes, verify the CLI:
 
 ```bash
 # 1. Verify CLI installation and environment
 ambiance doctor --json
 
-# 2. Check embedding status for the project
-ambiance embeddings status --json --project-path ./
-
-# 3. Create embeddings if needed (first-time setup, non-interactive)
-ambiance embeddings create --json --project-path ./ --force true
-
-# 4. Validate skill templates
+# 2. Validate skill templates
 ambiance skill verify --json
 ```
 
-**Important**: Without embeddings, `context` and `debug` commands will fall back to basic text search with reduced accuracy. Use `embeddings status` to check index readiness before semantic retrieval.
+**Default policy**: choose adaptively. Use `context --format index --no-embeddings` when exact identifiers are known. Use `context --format index --embeddings` for conceptual or cross-system questions, then turn the discovered chunk symbols into one deterministic follow-up query.
 
 ## Quick Reference for Agents
 
-| Task | Command | When to Use | Requires Embeddings |
-|------|---------|------------|---------------------|
+| Task | Command | When to Use | Embeddings |
+|------|---------|------------|------------|
 | Check environment | `doctor` | First run, troubleshooting | No |
 | Project overview | `hints` | First time in codebase, navigation | No |
-| Understand specific code | `context "<query>"` | Semantic code search, feature understanding | Yes (recommended) |
-| Navigate to exact locations | `context "<query>" --format index` | Get file:line jump targets and next actions | Yes (recommended) |
-| Debug an error | `debug "<log>"` | Extract context from error logs | Yes (recommended) |
+| Discover an unfamiliar behavior | `context "<query>" --format index --embeddings` | Semantic frontier across modules | Yes |
+| Understand known symbols | `context "<symbols>" --no-embeddings` | Focused deterministic evidence | No |
+| Navigate to exact locations | `context "<query>" --format index --no-embeddings` | Low-token file:line targets | No |
+| Debug an error | `debug "<log>"` | Extract context from error logs | Optional |
 | Find AST structures | `grep "<pattern>"` | Structural/capture-based search after index navigation | No |
 | Fill exact text details | native `rg -n "<term>"` | String-level verification in files selected by index/grep | No |
 | Analyze frontend | `frontend` | UI component analysis | No |
@@ -69,36 +64,36 @@ ambiance skill verify --json
 
 ## Search Routing Policy
 
-Use this order for agent search decisions (embedding-enabled):
+Use this order for agent search decisions:
 
-1. `context --format index` first for jump targets and file prioritization.
-2. `grep` second for AST shape/captures.
-3. Native text search third: `rg -n "<term>" <path>` (fallback: `grep -R`) to fill exact details.
+1. Known identifiers: run a deterministic `context --format index --no-embeddings` query.
+2. Unknown vocabulary or cross-system behavior: run one bounded `context --format index --embeddings` semantic frontier.
+3. Convert semantic chunk symbols into one deterministic context query.
+4. Use `grep`, `summary`, and native `rg -n` only for the selected files and ranges.
+5. Check one competing module or negative hypothesis before stopping.
 
-Fallback when embeddings/index are unavailable: start with native lexical search.
+Use at most one bounded search scout after these steps leave a specific unresolved question. Multi-agent search is not the default navigation strategy.
 
 ## Query Strategy: Semantic Anchor Clustering
 
-For embedding retrieval, use query strings that look like likely code/docs terms rather than conversational questions.
-
-- Prefer keyword-dense anchors over prose questions.
-- Include project-specific symbols and library names when known.
-- Combine domain intent + technical identifiers.
+For the first semantic frontier, describe one behavior or system boundary in plain language. For the deterministic follow-up, use the exact identifiers returned by the semantic chunks.
 
 Examples:
-- Conversational (weak): `What is the status of roadmap progress?`
-- Anchor cluster (strong): `roadmap milestones implementation status PHASE2 TODO`
-- Anchored with symbols (strong): `Supabase session middleware jwt validateToken cosineSimilarity`
+- Semantic frontier: `background cleanup during process shutdown`
+- Deterministic drilldown: `startCleanupTimer disposeAll process.once cleanup`
+- Semantic frontier: `machine-readable CLI output while installing the skill`
+- Deterministic drilldown: `runSkillInstall isJsonMode quiet SkillInstallReport`
 
 ## Index Hygiene
 
 Use this maintenance order:
 
-1. Status check first for deep investigations:
+1. Check truthful file/chunk coverage:
    `ambiance embeddings status --json --project-path ./`
-2. Prefer incremental freshness for day-to-day work:
-   `ambiance context "<query>" --json --project-path ./ --auto-sync`
+2. Prefer incremental freshness:
+   `ambiance context "<query>" --json --project-path ./ --embeddings`
    or `ambiance embeddings update --json --project-path ./`
+   Incremental freshness repairs new, stale, deleted, and tracked zero-chunk files.
 3. Full rebuild only when needed:
    use `ambiance embeddings create --json --project-path ./ --force true` for migration/incompatible-model/corruption scenarios.
 

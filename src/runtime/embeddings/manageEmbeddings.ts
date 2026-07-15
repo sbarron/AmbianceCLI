@@ -12,7 +12,7 @@ import { logger } from '../../utils/logger';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import { LocalEmbeddingStorage, type EmbeddingChunk } from '../../local/embeddingStorage';
 import { LocalEmbeddingGenerator } from '../../local/embeddingGenerator';
-import { ProjectIdentifier } from '../../local/projectIdentifier';
+import { ProjectIdentifier, loadIgnorePatterns } from '../../local/projectIdentifier';
 import {
   listProjectsWithEmbeddings,
   deleteProjectEmbeddings,
@@ -23,7 +23,15 @@ import { getCurrentModelConfiguration } from './modelConfiguration';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding, isTurboQuantized, turboDequantize, TurboQuantizedEmbedding } from '../../local/quantization';
+import { importEsm } from '../utils/esmImport';
+import {
+  isQuantized,
+  dequantizeInt8ToFloat32,
+  QuantizedEmbedding,
+  isTurboQuantized,
+  turboDequantize,
+  TurboQuantizedEmbedding,
+} from '../../local/quantization';
 
 export { getCurrentModelConfiguration };
 
@@ -36,6 +44,106 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+const INDEXABLE_FILE_PATTERNS = [
+  '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
+];
+
+const DEFAULT_INDEX_IGNORE_PATTERNS = [
+  '**/node_modules/**',
+  'node_modules/**',
+  '**/dist/**',
+  '**/build/**',
+  '**/out/**',
+  '**/.next/**',
+  '**/.git/**',
+  '**/.svn/**',
+  '**/.vscode/**',
+  '**/.idea/**',
+  '**/coverage/**',
+  '**/.nyc_output/**',
+  '**/.cache/**',
+  '**/tmp/**',
+  '**/temp/**',
+  '**/.tmp/**',
+  '**/*.log',
+  '**/*.map',
+  '**/*.tsbuildinfo',
+  '**/package-lock.json',
+  '**/yarn.lock',
+];
+
+function shouldIgnoreIndexableFile(filePath: string): boolean {
+  const pathParts = filePath.split(/[/\\]/);
+  for (const part of pathParts) {
+    if (
+      part === 'node_modules' ||
+      part === '.git' ||
+      part === 'dist' ||
+      part === 'build' ||
+      part === '.next' ||
+      part === 'coverage' ||
+      part.startsWith('.') ||
+      part.includes('.min.') ||
+      part.includes('.test.') ||
+      part.includes('.spec.')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function loadAdditionalIgnorePatterns(projectPath: string): Promise<string[]> {
+  const ignorePatterns: string[] = [];
+
+  try {
+    ignorePatterns.push(...(await loadIgnorePatterns(projectPath)));
+  } catch (error) {
+    logger.debug('Failed to load .gitignore patterns for stale scan', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  for (const ignoreFile of ['.cursorignore', '.vscodeignore', '.ambianceignore']) {
+    const ignorePath = path.join(projectPath, ignoreFile);
+    try {
+      if (fs.existsSync(ignorePath)) {
+        const patterns = fs
+          .readFileSync(ignorePath, 'utf8')
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line.length > 0 && !line.startsWith('#'));
+        ignorePatterns.push(...patterns);
+      }
+    } catch (error) {
+      logger.debug(`Failed to load ${ignoreFile} patterns for stale scan`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  ignorePatterns.push(...DEFAULT_INDEX_IGNORE_PATTERNS);
+  return ignorePatterns;
+}
+
+async function discoverIndexableProjectFiles(projectPath: string): Promise<string[]> {
+  const { globby } = await importEsm<typeof import('globby')>('globby');
+  const ignore = await loadAdditionalIgnorePatterns(projectPath);
+  const files = await globby(INDEXABLE_FILE_PATTERNS, {
+    cwd: projectPath,
+    ignore,
+    absolute: false,
+    dot: false,
+    onlyFiles: true,
+    suppressErrors: true,
+  });
+
+  return files
+    .map(file => path.normalize(file))
+    .filter(file => !shouldIgnoreIndexableFile(file))
+    .sort();
 }
 
 export type ManageEmbeddingsAction =
@@ -214,7 +322,11 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
       }
       case 'file_chunks': {
         const projectPath = requireProjectPath(args.projectPath);
-        if (!args.filePath || typeof args.filePath !== 'string' || args.filePath.trim().length === 0) {
+        if (
+          !args.filePath ||
+          typeof args.filePath !== 'string' ||
+          args.filePath.trim().length === 0
+        ) {
           throw new Error('filePath is required for file_chunks action');
         }
         return await getFileChunks({
@@ -769,10 +881,7 @@ export async function getRecentlyUpdatedFiles(args: {
   }
 }
 
-type ChunkingMode =
-  | 'smart_ast_likely'
-  | 'simple_line_likely'
-  | 'unknown';
+type ChunkingMode = 'smart_ast_likely' | 'simple_line_likely' | 'unknown';
 
 function normalizePathForComparison(inputPath: string): string {
   const normalized = path.normalize(inputPath).replace(/\\/g, '/');
@@ -845,10 +954,7 @@ function inferChunkingMode(chunks: EmbeddingChunk[]): {
   };
 }
 
-export async function getFileChunks(args: {
-  projectPath: string;
-  filePath: string;
-}): Promise<any> {
+export async function getFileChunks(args: { projectPath: string; filePath: string }): Promise<any> {
   const { projectPath, filePath } = args;
   const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
 
@@ -878,9 +984,7 @@ export async function getFileChunks(args: {
       .map(file => file.path);
 
     const suggestionText =
-      suggestions.length > 0
-        ? ` Closest matches: ${suggestions.join(', ')}`
-        : '';
+      suggestions.length > 0 ? ` Closest matches: ${suggestions.join(', ')}` : '';
 
     throw new Error(
       `No embedded file matched "${filePath}" in project ${resolvedProjectPath}.${suggestionText}`
@@ -970,6 +1074,13 @@ export async function checkStaleFiles(args: {
 
     // Get all files from database with their last modified timestamps
     const dbFiles = await storage.listProjectFiles(projectId);
+    const embeddingRows = await storage.getRecentlyUpdatedFiles(
+      projectId,
+      Math.max(1, dbFiles.length)
+    );
+    const embeddingCountByFileId = new Map(
+      embeddingRows.map(file => [file.fileId, file.embeddingCount])
+    );
 
     const staleFiles: Array<{
       filePath: string;
@@ -984,6 +1095,46 @@ export async function checkStaleFiles(args: {
       fileId: string;
       dbTimestamp: Date;
     }> = [];
+
+    const incompleteFiles: Array<{
+      filePath: string;
+      fileId: string;
+      dbTimestamp: Date;
+    }> = [];
+
+    const newFiles: Array<{
+      filePath: string;
+      diskTimestamp: Date;
+      fileSize: number;
+    }> = [];
+
+    const dbFilesByPath = new Map(
+      dbFiles.map(dbFile => [normalizePathForComparison(dbFile.path), dbFile])
+    );
+
+    const indexableFiles = await discoverIndexableProjectFiles(resolvedProjectPath);
+
+    for (const relativeFilePath of indexableFiles) {
+      const normalizedPath = normalizePathForComparison(relativeFilePath);
+      if (dbFilesByPath.has(normalizedPath)) {
+        continue;
+      }
+
+      const fullPath = path.join(resolvedProjectPath, relativeFilePath);
+      try {
+        const diskStats = fs.statSync(fullPath);
+        newFiles.push({
+          filePath: relativeFilePath,
+          diskTimestamp: diskStats.mtime,
+          fileSize: diskStats.size,
+        });
+      } catch (error) {
+        logger.debug('Failed to stat new indexable file during stale scan', {
+          filePath: relativeFilePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     // Check each file's disk timestamp vs database timestamp
     for (const dbFile of dbFiles) {
@@ -1004,8 +1155,21 @@ export async function checkStaleFiles(args: {
       const diskTimestamp = diskStats.mtime;
       const dbTimestamp = dbFile.lastModified;
 
-      // If disk file is newer than database, it's stale
-      if (diskTimestamp > dbTimestamp) {
+      // File metadata can survive a failed or interrupted embedding write.
+      // Treat zero-chunk files as incomplete even when timestamp and size look
+      // current; otherwise status reports false 100% coverage forever.
+      if (diskStats.size > 0 && (embeddingCountByFileId.get(dbFile.id) || 0) === 0) {
+        incompleteFiles.push({
+          filePath: dbFile.path,
+          fileId: dbFile.id,
+          dbTimestamp,
+        });
+      }
+
+      // If disk file is newer than database, or its size differs, it's stale.
+      // Size catches edits when filesystem timestamp precision or restoration
+      // causes mtime comparisons to be inconclusive.
+      if (diskTimestamp > dbTimestamp || diskStats.size !== dbFile.fileSize) {
         const timeDiff = diskTimestamp.getTime() - dbTimestamp.getTime();
         staleFiles.push({
           filePath: dbFile.path,
@@ -1024,20 +1188,67 @@ export async function checkStaleFiles(args: {
       projectId,
       totalFiles: dbFiles.length,
       staleFiles: staleFiles.length,
+      newFiles: newFiles.length,
       missingFiles: missingFiles.length,
+      incompleteFiles: incompleteFiles.length,
     });
 
-    // If autoUpdate is true, update the stale files
+    // If autoUpdate is true, update stale/new files and remove deleted-file embeddings.
     let updateResult = null;
-    if (autoUpdate && staleFiles.length > 0) {
-      logger.info('Auto-updating stale files', {
-        count: staleFiles.length,
+    let missingCleanupResult: {
+      filesRemoved: number;
+      embeddingsDeleted: number;
+      errors: string[];
+    } | null = null;
+    const filesToUpdate = [
+      ...new Set([
+        ...staleFiles.map(f => f.filePath),
+        ...newFiles.map(f => f.filePath),
+        ...incompleteFiles.map(f => f.filePath),
+      ]),
+    ];
+
+    if (autoUpdate && missingFiles.length > 0) {
+      missingCleanupResult = {
+        filesRemoved: 0,
+        embeddingsDeleted: 0,
+        errors: [],
+      };
+
+      for (const missingFile of missingFiles) {
+        try {
+          const deletedEmbeddings = await storage.deleteEmbeddingsByFile(missingFile.fileId);
+          const deletedMetadata = await storage.deleteFileMetadata(missingFile.fileId);
+          missingCleanupResult.embeddingsDeleted += deletedEmbeddings;
+          missingCleanupResult.filesRemoved += deletedMetadata;
+        } catch (error) {
+          missingCleanupResult.errors.push(
+            `${missingFile.filePath}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+
+      logger.info('Cleaned up missing-file embeddings', {
+        projectId,
+        missingFiles: missingFiles.length,
+        filesRemoved: missingCleanupResult.filesRemoved,
+        embeddingsDeleted: missingCleanupResult.embeddingsDeleted,
+        errors: missingCleanupResult.errors.length,
+      });
+    }
+
+    if (autoUpdate && filesToUpdate.length > 0) {
+      logger.info('Auto-updating stale or new files', {
+        staleCount: staleFiles.length,
+        newCount: newFiles.length,
+        incompleteCount: incompleteFiles.length,
+        count: filesToUpdate.length,
         batchSize,
       });
 
       updateResult = await updateProjectEmbeddings({
         projectPath: resolvedProjectPath,
-        files: staleFiles.map(f => f.filePath),
+        files: filesToUpdate,
         force: true,
         batchSize,
       });
@@ -1064,17 +1275,30 @@ export async function checkStaleFiles(args: {
         diskTimestamp: f.diskTimestamp.toISOString(),
         timeDiffSeconds: Math.round(f.timeDiff / 1000),
       })),
+      newFiles: newFiles.map(f => ({
+        filePath: f.filePath,
+        diskTimestamp: f.diskTimestamp.toISOString(),
+        fileSize: f.fileSize,
+      })),
       missingFiles: missingFiles.map(f => ({
         filePath: f.filePath,
         dbTimestamp: f.dbTimestamp.toISOString(),
       })),
+      incompleteFiles: incompleteFiles.map(f => ({
+        filePath: f.filePath,
+        dbTimestamp: f.dbTimestamp.toISOString(),
+        reason: 'Tracked file has zero embedding chunks',
+      })),
       staleCount: staleFiles.length,
+      newCount: newFiles.length,
       missingCount: missingFiles.length,
+      incompleteCount: incompleteFiles.length,
       autoUpdate,
       updateResult,
+      missingCleanupResult,
       message: autoUpdate
-        ? `Found and updated ${staleFiles.length} stale files`
-        : `Found ${staleFiles.length} stale files that need updating`,
+        ? `Found and updated ${staleFiles.length} stale, ${newFiles.length} new, and ${incompleteFiles.length} incomplete files; cleaned up ${missingCleanupResult?.filesRemoved ?? 0} missing files`
+        : `Found ${staleFiles.length} stale, ${newFiles.length} new, and ${incompleteFiles.length} incomplete files that need updating`,
     };
   } catch (error) {
     logger.error('Failed to check stale files', {

@@ -24,6 +24,8 @@ const DB_IMPORTS = [
   /from\s+['"]sqlite3?['"]/,
   /from\s+['"]mongodb?['"]/,
   /from\s+['"](?:io)?redis['"]/,
+  /from\s+['"]chromadb['"]|import.*chromadb/i,
+  /\bnew\s+ChromaClient\s*\(/,
   /\bnew\s+Pool\s*\(/,
   /\bnew\s+Client\s*\(/,
   /\bnew\s+Database\s*\(/,

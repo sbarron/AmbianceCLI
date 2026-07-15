@@ -12,7 +12,18 @@
     },
     {
       "command": "context",
-      "args": ["${query}", "--json", "--project-path", "${projectPath}", "--max-tokens", "2000"]
+      "args": [
+        "${query}",
+        "--format",
+        "index",
+        "--embeddings",
+        "--json",
+        "--project-path",
+        "${projectPath}",
+        "--max-tokens",
+        "1600"
+      ]
     }
-  ]
+  ],
+  "agentFollowUp": "Use symbols returned by the semantic frontier in one context --no-embeddings --format index query capped at 1200 tokens."
 }

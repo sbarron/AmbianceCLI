@@ -763,15 +763,19 @@ export class LocalEmbeddingStorage {
               bits: turboBits,
               originalSize: chunk.embedding.length * 4,
               packedSize: embeddingToStore.data.length,
-              compressionRatio: ((chunk.embedding.length * 4) / (embeddingToStore.data.length + 16)).toFixed(1),
+              compressionRatio: (
+                (chunk.embedding.length * 4) /
+                (embeddingToStore.data.length + 16)
+              ).toFixed(1),
             });
           } catch (quantizationError) {
             // Fall back to int8
             logger.warn('⚠️ Turbo quantization failed, falling back to int8', {
               chunkId: chunk.id,
-              error: quantizationError instanceof Error
-                ? quantizationError.message
-                : String(quantizationError),
+              error:
+                quantizationError instanceof Error
+                  ? quantizationError.message
+                  : String(quantizationError),
             });
             try {
               embeddingToStore = quantizeFloat32ToInt8(chunk.embedding);
@@ -791,7 +795,10 @@ export class LocalEmbeddingStorage {
               chunkId: chunk.id,
               originalSize: chunk.embedding.length * 4,
               quantizedSize: (embeddingToStore as QuantizedEmbedding).data.length,
-              compressionRatio: ((chunk.embedding.length * 4) / (embeddingToStore as QuantizedEmbedding).data.length).toFixed(1),
+              compressionRatio: (
+                (chunk.embedding.length * 4) /
+                (embeddingToStore as QuantizedEmbedding).data.length
+              ).toFixed(1),
             });
           } catch (quantizationError) {
             logger.warn('⚠️ Quantization failed, storing as float32', {
@@ -1202,7 +1209,7 @@ export class LocalEmbeddingStorage {
       }
     }
 
-    let similarities: { chunk: EmbeddingChunk; similarity: number }[] = [];
+    const similarities: { chunk: EmbeddingChunk; similarity: number }[] = [];
 
     // Fast path: turbo-quantized embeddings use precomputed lookup table (no dequantization)
     if (turboChunks.length > 0) {
@@ -2364,6 +2371,40 @@ export class LocalEmbeddingStorage {
   }
 
   /**
+   * Delete file metadata after its embeddings have been removed.
+   */
+  async deleteFileMetadata(fileId: string): Promise<number> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    if (!fileId) {
+      throw new Error('fileId is required');
+    }
+
+    try {
+      const result = this.db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
+      logger.info('Deleted file metadata', {
+        fileId,
+        deletedRows: result.changes,
+      });
+      return result.changes;
+    } catch (err) {
+      logger.error('Failed to delete file metadata', {
+        fileId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new Error(
+        `Failed to delete file metadata for ${fileId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
    * Find stale embeddings within a project (multiple generations of same file)
    */
   async findStaleFileEmbeddings(projectId: string): Promise<
@@ -2879,7 +2920,9 @@ export class LocalEmbeddingStorage {
   /**
    * Estimate the storage size of an embedding
    */
-  private estimateEmbeddingSize(embedding: number[] | QuantizedEmbedding | TurboQuantizedEmbedding): number {
+  private estimateEmbeddingSize(
+    embedding: number[] | QuantizedEmbedding | TurboQuantizedEmbedding
+  ): number {
     if (isTurboQuantized(embedding)) {
       // Turbo: 16-byte header + packed codes
       return 16 + embedding.data.length;
@@ -2970,14 +3013,18 @@ export class LocalEmbeddingStorage {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
-      const row = this.db.prepare(`
+      const row = this.db
+        .prepare(
+          `
         SELECT metadata_embedding_format, COUNT(*) as cnt
         FROM embeddings
         WHERE project_id = ?
         GROUP BY metadata_embedding_format
         ORDER BY cnt DESC
         LIMIT 1
-      `).get(projectId) as { metadata_embedding_format: string | null; cnt: number } | undefined;
+      `
+        )
+        .get(projectId) as { metadata_embedding_format: string | null; cnt: number } | undefined;
 
       if (!row || !row.metadata_embedding_format) return null;
       return row.metadata_embedding_format as EmbeddingFormat;

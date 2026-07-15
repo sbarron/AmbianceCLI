@@ -23,6 +23,11 @@ interface IgnorePatterns {
   ambianceignore: string[];
 }
 
+function normalizeCoveragePath(filePath: string): string {
+  const normalized = path.normalize(filePath).replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
 /**
  * Get the common path prefix from an array of file paths
  */
@@ -169,6 +174,7 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
   totalFiles: number;
   excludedFiles: number;
   indexableFiles: number;
+  indexablePaths: string[];
   scanSuccessful: boolean;
   error?: string;
 }> {
@@ -179,6 +185,7 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
         totalFiles: 0,
         excludedFiles: 0,
         indexableFiles: 0,
+        indexablePaths: [],
         scanSuccessful: false,
         error: 'Project directory not found',
       };
@@ -208,6 +215,7 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
       ignore: allIgnorePatterns,
       absolute: false,
       dot: false,
+      suppressErrors: true,
     });
 
     // Apply the same additional filtering as the indexer
@@ -233,7 +241,14 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
     };
 
     const beforeFilterCount = allFiles.length;
-    const indexableFiles = allFiles.filter(file => !shouldIgnoreFile(file));
+    const indexableFiles = allFiles.filter(file => {
+      if (shouldIgnoreFile(file)) return false;
+      try {
+        return fs.statSync(path.join(projectPath, file)).size > 0;
+      } catch {
+        return false;
+      }
+    });
     const afterFilterCount = indexableFiles.length;
     const excludedFiles = beforeFilterCount - afterFilterCount;
 
@@ -241,6 +256,7 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
       totalFiles: beforeFilterCount,
       excludedFiles,
       indexableFiles: afterFilterCount,
+      indexablePaths: indexableFiles,
       scanSuccessful: true,
     };
   } catch (error) {
@@ -253,6 +269,7 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
       totalFiles: 0,
       excludedFiles: 0,
       indexableFiles: 0,
+      indexablePaths: [],
       scanSuccessful: false,
       error: error instanceof Error ? error.message : String(error),
     };
@@ -691,8 +708,15 @@ export async function getProjectEmbeddingDetails(args: {
       lineCount: f.lineCount,
     }));
 
-    // Calculate coverage using unique embedded file paths to avoid stale/inflated counters.
-    const embeddedFiles = new Set(filesMetadata.map(f => f.path)).size;
+    const embeddingRows = await storage.getRecentlyUpdatedFiles(
+      project.id,
+      Math.max(1, filesMetadata.length)
+    );
+    const chunkedPaths = new Set(
+      embeddingRows
+        .filter(file => file.embeddingCount > 0)
+        .map(file => normalizeCoveragePath(file.filePath))
+    );
 
     // Extract language and file type statistics from embedded files
     const languages: Record<string, number> = {};
@@ -709,9 +733,13 @@ export async function getProjectEmbeddingDetails(args: {
 
     // Analyze embedding coverage using the same logic as the indexer
     const projectScan = await analyzeProjectIndexableFiles(project.path);
+    const { indexablePaths: _indexablePaths, ...projectScanSummary } = projectScan;
     const embeddingStats = analyzeEmbeddingCoverage(filesMetadata);
 
     const indexableFiles = projectScan.indexableFiles;
+    const embeddedFiles = projectScan.indexablePaths.filter(file =>
+      chunkedPaths.has(normalizeCoveragePath(file))
+    ).length;
     const rawCoveragePercent =
       indexableFiles > 0 ? Math.round((embeddedFiles / indexableFiles) * 10000) / 100 : 0;
     const coveragePercent = Math.min(100, rawCoveragePercent);
@@ -729,7 +757,7 @@ export async function getProjectEmbeddingDetails(args: {
         languages,
         fileTypes,
         ...embeddingStats,
-        ...projectScan,
+        ...projectScanSummary,
         note:
           indexableFiles > 0
             ? `Coverage calculated using same file discovery logic as embedding indexer.`

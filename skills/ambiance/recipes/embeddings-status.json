@@ -8,7 +8,7 @@
   "args": ["status", "--json", "--project-path", "${projectPath}"],
   "notes": [
     "Run before deep investigations to verify index readiness",
-    "If stale, prefer context --auto-sync or embeddings update for incremental freshness",
+    "If embeddings are needed and stale, prefer context --embeddings or embeddings update for incremental freshness",
     "Use embeddings create --force true only for migration/incompatible-model/corruption scenarios"
   ]
 }

@@ -62,6 +62,10 @@ export async function shouldAutoSync(projectId: string): Promise<{
     return { shouldSync: false, reason: 'Auto-sync disabled' };
   }
 
+  if (!projectId.trim()) {
+    return { shouldSync: false, reason: 'Check failed: project ID is required' };
+  }
+
   const now = Date.now();
   const threshold = getAutoSyncThresholdMs();
 

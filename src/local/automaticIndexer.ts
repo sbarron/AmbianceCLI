@@ -1099,6 +1099,7 @@ export class AutomaticIndexer {
         absolute: false,
         dot: false,
         onlyFiles: true,
+        suppressErrors: true,
       });
 
       logger.debug(`🔍 Globby returned ${files.length} files before filtering`, {

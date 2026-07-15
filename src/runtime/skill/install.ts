@@ -15,8 +15,14 @@ export async function runSkillInstall(args: {
   sourceDir: string;
   targetDir?: string;
   dryRun?: boolean;
+  quiet?: boolean;
 }): Promise<SkillInstallReport> {
-  const { sourceDir, dryRun = false } = args;
+  const { sourceDir, dryRun = false, quiet = false } = args;
+  const log = (message: string): void => {
+    if (!quiet) {
+      process.stdout.write(`${message}\n`);
+    }
+  };
 
   let targetDirs: string[] = [];
   const home = os.homedir();
@@ -31,19 +37,19 @@ export async function runSkillInstall(args: {
       .map(p => path.join(p, 'skills', 'ambiance'));
 
     if (targetDirs.length === 0) {
-      console.log(
+      log(
         `No known AI provider directories found (${providers.join(', ')}). Defaulting to .claude`
       );
       targetDirs.push(path.join(home, '.claude', 'skills', 'ambiance'));
     }
   }
 
-  console.log(`Installing ambiance skill...`);
-  console.log(`Source: ${sourceDir}`);
-  console.log(`Targets:\n  - ${targetDirs.join('\n  - ')}`);
+  log(`Installing ambiance skill...`);
+  log(`Source: ${sourceDir}`);
+  log(`Targets:\n  - ${targetDirs.join('\n  - ')}`);
 
   if (dryRun) {
-    console.log('\n[DRY RUN] Would copy files to the target directories.');
+    log('\n[DRY RUN] Would copy files to the target directories.');
     return {
       success: true,
       timestamp: new Date().toISOString(),
@@ -63,7 +69,7 @@ export async function runSkillInstall(args: {
       recursive: true,
       force: true,
     });
-    console.log(`Successfully installed ambiance skill to ${targetDir}`);
+    log(`Successfully installed ambiance skill to ${targetDir}`);
   }
 
   return {

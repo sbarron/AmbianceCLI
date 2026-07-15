@@ -2,7 +2,7 @@ jest.mock('../../../local/embeddingStorage', () => ({
   LocalEmbeddingStorage: jest.fn(),
 }));
 
-jest.mock('../../utils/pathUtils', () => ({
+jest.mock('../../../runtime/utils/pathUtils', () => ({
   validateAndResolvePath: jest.fn(),
 }));
 
@@ -20,7 +20,7 @@ describe('getEmbeddingStatus', () => {
 
   test('returns success=false when embedding storage is unavailable', async () => {
     const { LocalEmbeddingStorage } = await import('../../../local/embeddingStorage');
-    const { validateAndResolvePath } = await import('../../utils/pathUtils');
+    const { validateAndResolvePath } = await import('../../../runtime/utils/pathUtils');
     const { ProjectIdentifier } = await import('../../../local/projectIdentifier');
 
     (validateAndResolvePath as jest.Mock).mockReturnValue('/project');

@@ -149,8 +149,12 @@ export class MCPErrorHandler {
     }
 
     if (error instanceof Error) {
+      const normalizedMessage = error.message.toLowerCase();
       // Handle specific error types based on message patterns
-      if (error.message.includes('DATABASE_URL') || error.message.includes('OPENAI_API_KEY')) {
+      if (
+        normalizedMessage.includes('database_url') ||
+        normalizedMessage.includes('openai_api_key')
+      ) {
         return {
           code: ErrorCode.MISSING_CONFIG,
           message: 'Required configuration is missing. Please check environment variables.',
@@ -161,7 +165,7 @@ export class MCPErrorHandler {
         };
       }
 
-      if (error.message.includes('network') || error.message.includes('ECONNREFUSED')) {
+      if (normalizedMessage.includes('network') || normalizedMessage.includes('econnrefused')) {
         return {
           code: ErrorCode.NETWORK_ERROR,
           message: 'Network connection failed',
@@ -172,7 +176,7 @@ export class MCPErrorHandler {
         };
       }
 
-      if (error.message.includes('timeout')) {
+      if (normalizedMessage.includes('timeout')) {
         return {
           code: ErrorCode.AI_TIMEOUT_ERROR,
           message: 'Operation timed out',
@@ -183,7 +187,7 @@ export class MCPErrorHandler {
         };
       }
 
-      if (error.message.includes('rate limit') || error.message.includes('429')) {
+      if (normalizedMessage.includes('rate limit') || normalizedMessage.includes('429')) {
         return {
           code: ErrorCode.RATE_LIMIT_ERROR,
           message: 'Rate limit exceeded, please try again later',
@@ -194,7 +198,7 @@ export class MCPErrorHandler {
         };
       }
 
-      if (error.message.includes('Search failed')) {
+      if (normalizedMessage.includes('search failed')) {
         return {
           code: ErrorCode.SEARCH_FAILED,
           message: 'Search operation failed',
@@ -205,7 +209,7 @@ export class MCPErrorHandler {
         };
       }
 
-      if (error.message.includes('permission') || error.message.includes('EACCES')) {
+      if (normalizedMessage.includes('permission') || normalizedMessage.includes('eacces')) {
         return {
           code: ErrorCode.PERMISSION_ERROR,
           message: 'Permission denied',
@@ -216,7 +220,7 @@ export class MCPErrorHandler {
         };
       }
 
-      if (error.message.includes('ENOENT') || error.message.includes('file not found')) {
+      if (normalizedMessage.includes('enoent') || normalizedMessage.includes('file not found')) {
         return {
           code: ErrorCode.FILE_NOT_FOUND,
           message: 'File or directory not found',
@@ -384,11 +388,26 @@ export class MCPErrorHandler {
   }
 }
 
-// Export convenience functions
-export const createError = MCPErrorHandler.createError;
-export const handleError = MCPErrorHandler.handleError;
-export const isRetryableError = MCPErrorHandler.isRetryableError;
-export const getErrorCode = MCPErrorHandler.getErrorCode;
-export const getUserFriendlyMessage = MCPErrorHandler.getUserFriendlyMessage;
-export const withErrorHandling = MCPErrorHandler.withErrorHandling;
-export const withSyncErrorHandling = MCPErrorHandler.withSyncErrorHandling;
+// Export bound convenience functions so static `this` and test spies remain reliable.
+export const createError = (error: unknown, context?: Record<string, unknown>): MCPError =>
+  MCPErrorHandler.createError(error, context);
+export const handleError = (
+  error: unknown,
+  context?: Record<string, unknown>,
+  options: ErrorHandlingOptions = {}
+): MCPError => MCPErrorHandler.handleError(error, context, options);
+export const isRetryableError = (error: MCPError): boolean =>
+  MCPErrorHandler.isRetryableError(error);
+export const getErrorCode = (error: unknown): ErrorCode => MCPErrorHandler.getErrorCode(error);
+export const getUserFriendlyMessage = (error: MCPError): string =>
+  MCPErrorHandler.getUserFriendlyMessage(error);
+export const withErrorHandling = <T>(
+  fn: () => Promise<T>,
+  context?: Record<string, unknown>,
+  options?: ErrorHandlingOptions
+): Promise<T> => MCPErrorHandler.withErrorHandling(fn, context, options);
+export const withSyncErrorHandling = <T>(
+  fn: () => T,
+  context?: Record<string, unknown>,
+  options?: ErrorHandlingOptions
+): T => MCPErrorHandler.withSyncErrorHandling(fn, context, options);

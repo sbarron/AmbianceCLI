@@ -33,17 +33,17 @@ describe('Logger', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    logger = new Logger('Test');
 
     // Mock environment
     process.env.USERPROFILE = '/home/testuser';
     process.env.NODE_ENV = 'test';
+    process.env.LOG_LEVEL = 'debug';
 
     // Mock path.join to return predictable paths
     mockPath.join.mockImplementation((...args: string[]) => args.join('/'));
 
     // Mock fs operations
-    mockFs.existsSync.mockReturnValue(true);
+    mockFs.existsSync.mockImplementation(filePath => !String(filePath).endsWith('mcp-proxy.log'));
     mockFs.statSync.mockReturnValue({
       size: 1000,
       isFile: () => true,
@@ -62,12 +62,16 @@ describe('Logger', () => {
       blksize: 4096,
       blocks: 0,
     } as any);
+
+    logger = new Logger('Test');
+    mockFs.existsSync.mockReturnValue(true);
   });
 
   afterEach(() => {
     delete process.env.USERPROFILE;
     delete process.env.NODE_ENV;
     delete process.env.DEBUG;
+    delete process.env.LOG_LEVEL;
   });
 
   describe('Constructor', () => {

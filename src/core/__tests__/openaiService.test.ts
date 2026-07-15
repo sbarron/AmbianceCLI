@@ -227,7 +227,7 @@ describe('OpenAIService', () => {
           {
             role: 'user',
             content:
-              'Validate that providing max_completion_tokens is accepted by mapping to max_tokens.',
+              'Validate that providing max_completion_tokens is accepted by mapping to max_tokens for a normal chat completion request, while preserving every other supported request field and returning the provider response unchanged.',
           },
         ],
         max_completion_tokens: 321,

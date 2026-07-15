@@ -358,6 +358,9 @@ async function matchQueryInFile(parsed: ParsedFile, query: AstQuery): Promise<Ca
   const candidates: CandidateSymbol[] = [];
 
   switch (query.kind) {
+    case 'symbol':
+      candidates.push(...matchSymbolQuery(parsed, query));
+      break;
     case 'import':
       candidates.push(...matchImportQuery(parsed, query));
       break;
@@ -376,6 +379,46 @@ async function matchQueryInFile(parsed: ParsedFile, query: AstQuery): Promise<Ca
     case 'route':
       candidates.push(...matchRouteQuery(parsed, query));
       break;
+  }
+
+  return candidates;
+}
+
+/**
+ * Match any extracted symbol by name. This is intentionally broader than
+ * export/call queries so symbol-anchored agent queries can find local helpers.
+ */
+function matchSymbolQuery(
+  parsed: ParsedFile,
+  query: Extract<AstQuery, { kind: 'symbol' }>
+): CandidateSymbol[] {
+  const candidates: CandidateSymbol[] = [];
+  const namePattern = query.name;
+
+  for (const symbol of parsed.symbols) {
+    if (!matchesPattern(symbol.name, namePattern)) {
+      continue;
+    }
+
+    const role =
+      symbol.kind === 'export'
+        ? 'interface'
+        : symbol.kind === 'import'
+          ? 'dependency'
+          : symbol.kind === 'call'
+            ? 'operation'
+            : 'symbol';
+
+    candidates.push({
+      file: parsed.filePath,
+      symbol: symbol.name,
+      start: symbol.start,
+      end: symbol.end,
+      kind: symbol.kind,
+      score: symbol.kind === 'export' ? 0.95 : 0.85,
+      reasons: [`symbol matches: ${symbol.name}`],
+      role,
+    });
   }
 
   return candidates;

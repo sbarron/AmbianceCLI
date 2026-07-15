@@ -67,12 +67,12 @@ const LLOYD_MAX_2BIT = {
 /** 4-bit (16 levels) Lloyd-Max for N(0,1) */
 const LLOYD_MAX_4BIT = {
   boundaries: [
-    -2.401, -1.844, -1.437, -1.099, -0.7996, -0.5224, -0.2582, 0.0,
-    0.2582, 0.5224, 0.7996, 1.099, 1.437, 1.844, 2.401,
+    -2.401, -1.844, -1.437, -1.099, -0.7996, -0.5224, -0.2582, 0.0, 0.2582, 0.5224, 0.7996, 1.099,
+    1.437, 1.844, 2.401,
   ],
   centroids: [
-    -2.733, -2.069, -1.618, -1.256, -0.9424, -0.6568, -0.3881, -0.1284,
-    0.1284, 0.3881, 0.6568, 0.9424, 1.256, 1.618, 2.069, 2.733,
+    -2.733, -2.069, -1.618, -1.256, -0.9424, -0.6568, -0.3881, -0.1284, 0.1284, 0.3881, 0.6568,
+    0.9424, 1.256, 1.618, 2.069, 2.733,
   ],
   numLevels: 16,
 };
@@ -106,14 +106,14 @@ class SeededRNG {
   /** Returns a uniform uint32 */
   private next(): number {
     const s = this.s;
-    const result = (Math.imul(s[1], 5) << 7 | Math.imul(s[1], 5) >>> 25) * 9;
+    const result = ((Math.imul(s[1], 5) << 7) | (Math.imul(s[1], 5) >>> 25)) * 9;
     const t = s[1] << 9;
     s[2] ^= s[0];
     s[3] ^= s[1];
     s[1] ^= s[2];
     s[0] ^= s[3];
     s[2] ^= t;
-    s[3] = (s[3] << 11 | s[3] >>> 21);
+    s[3] = (s[3] << 11) | (s[3] >>> 21);
     return result >>> 0;
   }
 
@@ -125,7 +125,7 @@ class SeededRNG {
   /** Returns a standard Gaussian sample via Box-Muller */
   gaussian(): number {
     let u1 = this.uniform();
-    let u2 = this.uniform();
+    const u2 = this.uniform();
     // Avoid log(0)
     while (u1 === 0) u1 = this.uniform();
     return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
@@ -210,7 +210,11 @@ function generateOrthogonalMatrix(dim: number, seed: number): Float64Array {
  * Apply rotation matrix R to a vector: result = R * v
  * R is row-major: result[i] = sum_k R[i*dim + k] * v[k]
  */
-function applyRotation(matrix: Float64Array, v: number[] | Float64Array, dim: number): Float64Array {
+function applyRotation(
+  matrix: Float64Array,
+  v: number[] | Float64Array,
+  dim: number
+): Float64Array {
   const result = new Float64Array(dim);
   for (let i = 0; i < dim; i++) {
     const iOff = i * dim;
@@ -283,9 +287,9 @@ function unpackCodes(packed: Uint8Array, dimensions: number, bits: TurboBits): U
   if (bits === 4) {
     for (let i = 0; i < dimensions; i += 2) {
       const byte = packed[i >> 1];
-      codes[i] = (byte >> 4) & 0x0F;
+      codes[i] = (byte >> 4) & 0x0f;
       if (i + 1 < dimensions) {
-        codes[i + 1] = byte & 0x0F;
+        codes[i + 1] = byte & 0x0f;
       }
     }
   } else {
@@ -487,10 +491,10 @@ export function turboApproxDotProduct(
     // 4-bit: 2 codes per byte
     for (let i = 0; i < dimensions; i += 2) {
       const byte = data[i >> 1];
-      const code0 = (byte >> 4) & 0x0F;
+      const code0 = (byte >> 4) & 0x0f;
       dotProduct += table[i * numLevels + code0];
       if (i + 1 < dimensions) {
-        const code1 = byte & 0x0F;
+        const code1 = byte & 0x0f;
         dotProduct += table[(i + 1) * numLevels + code1];
       }
     }
@@ -558,15 +562,17 @@ export function serializeTurboEmbedding(quantized: TurboQuantizedEmbedding): Buf
   const headerSize = 16;
   const buf = Buffer.alloc(headerSize + quantized.data.length);
 
-  buf.writeUInt8(0x54, 0);                       // magic 'T'
-  buf.writeUInt8(quantized.bits, 1);              // bits
-  buf.writeUInt16LE(quantized.dimensions, 2);     // dimensions
-  buf.writeUInt32LE(quantized.rotationSeed, 4);   // seed
-  buf.writeDoubleLE(quantized.norm, 8);           // norm
+  buf.writeUInt8(0x54, 0); // magic 'T'
+  buf.writeUInt8(quantized.bits, 1); // bits
+  buf.writeUInt16LE(quantized.dimensions, 2); // dimensions
+  buf.writeUInt32LE(quantized.rotationSeed, 4); // seed
+  buf.writeDoubleLE(quantized.norm, 8); // norm
 
   // Copy packed data
-  Buffer.from(quantized.data.buffer, quantized.data.byteOffset, quantized.data.byteLength)
-    .copy(buf, headerSize);
+  Buffer.from(quantized.data.buffer, quantized.data.byteOffset, quantized.data.byteLength).copy(
+    buf,
+    headerSize
+  );
 
   return buf;
 }
@@ -594,9 +600,7 @@ export function deserializeTurboEmbedding(buf: Buffer): TurboQuantizedEmbedding 
 // Type guard
 // ─────────────────────────────────────────────────
 
-export function isTurboQuantized(
-  embedding: unknown
-): embedding is TurboQuantizedEmbedding {
+export function isTurboQuantized(embedding: unknown): embedding is TurboQuantizedEmbedding {
   return (
     typeof embedding === 'object' &&
     embedding !== null &&

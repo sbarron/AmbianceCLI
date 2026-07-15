@@ -529,6 +529,7 @@ export class FileDiscovery {
         absolute: false,
         onlyFiles: true,
         followSymbolicLinks: false,
+        suppressErrors: true,
       });
 
       const initiallyHardExcluded = filePaths.filter(filePath =>

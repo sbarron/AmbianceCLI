@@ -1,5 +1,5 @@
 /**
- * Integration tests for tool combinations to improve coverage
+ * Integration tests for tool combinations to improve coverage.
  * Tests workflows that use multiple tools together
  */
 

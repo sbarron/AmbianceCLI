@@ -51,7 +51,7 @@
       "commands": [
         {
           "tool": "context",
-          "args_template": "--format index --json --auto-sync",
+          "args_template": "--format index --no-embeddings --json",
           "query_patterns": [
             "python services main.py health_check scheduler loop run_* process_* execute_*",
             "node services index.ts server.ts app.ts bootstrap startup",
@@ -91,10 +91,7 @@
         }
       ],
       "skip_if": {
-        "conditions": [
-          "no infrastructure detected in manifest",
-          "pure in-memory/static project"
-        ]
+        "conditions": ["no infrastructure detected in manifest", "pure in-memory/static project"]
       }
     },
     {
@@ -118,10 +115,7 @@
         }
       ],
       "skip_if": {
-        "conditions": [
-          "no web framework detected",
-          "pure CLI tool or library"
-        ]
+        "conditions": ["no web framework detected", "pure CLI tool or library"]
       }
     },
     {
@@ -145,10 +139,7 @@
         }
       ],
       "skip_if": {
-        "conditions": [
-          "no frontend framework detected",
-          "pure backend/API project"
-        ]
+        "conditions": ["no frontend framework detected", "pure backend/API project"]
       }
     }
   ],
@@ -195,7 +186,7 @@
       "likely_causes": [
         "Query too generic or mixed-domain",
         "Using class names without runtime verbs",
-        "Embeddings not synced (try --auto-sync)"
+        "Query does not use concrete project vocabulary"
       ],
       "fixes": [
         "Split query into domain-specific passes",

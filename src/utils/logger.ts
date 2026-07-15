@@ -123,7 +123,7 @@ export class Logger {
       ...(context && { context }),
     };
 
-    const formattedMessage = `[${timestamp}] ${level} [${this.prefix}] ${message}`;
+    const formattedMessage = `[${timestamp}] [${level}] [${this.prefix}] ${message}`;
     const contextStr = context ? this.safeJsonStringify(context) : '';
 
     // IMPORTANT: Never write logs to stdout in MCP stdio mode; use stderr only

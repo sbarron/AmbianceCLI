@@ -22,7 +22,10 @@ import {
 } from '../../tools/localTools/systemMapComposer';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import * as path from 'path';
-import type { LocalContextResponse } from '../../tools/localTools/enhancedLocalContext';
+import type {
+  LocalContextResponse,
+  SemanticChunkMatch,
+} from '../../tools/localTools/enhancedLocalContext';
 
 // Simple single-flight guard to avoid duplicate concurrent runs for the same key
 const inFlightRequests: Map<string, Promise<any>> = new Map();
@@ -92,7 +95,34 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       // Embedding lifecycle: ALWAYS ensure embeddings exist & are fresh
       // before running any context query.  This runs regardless of flags.
       // ──────────────────────────────────────────────────────────────────
-      const embeddingsEnabled = process.env.USE_LOCAL_EMBEDDINGS === 'true' || useEmbeddings;
+      let embeddingsEnabled = process.env.USE_LOCAL_EMBEDDINGS === 'true' || useEmbeddings;
+
+      // Auto-enable embeddings if they exist for the project, unless explicitly disabled
+      if (!embeddingsEnabled && process.env.USE_LOCAL_EMBEDDINGS !== 'false') {
+        try {
+          const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+          const { ProjectIdentifier } = await import('../../local/projectIdentifier');
+          const storage = new LocalEmbeddingStorage();
+          const projectInfo =
+            await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+          const stats = await storage.getProjectStats(projectInfo.id);
+          if (stats && stats.totalChunks > 0) {
+            embeddingsEnabled = true;
+            process.env.USE_LOCAL_EMBEDDINGS = 'true'; // For downstream sync managers
+            logger.info(
+              '🧠 Automatically enabled local embeddings because they were found for this project'
+            );
+          }
+        } catch (error) {
+          // ignore auto-detect error
+        }
+      }
+
+      let embeddingSync: any = {
+        enabled: embeddingsEnabled,
+        checked: false,
+        updated: false,
+      };
 
       if (embeddingsEnabled) {
         try {
@@ -102,9 +132,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             const { checkStaleFiles, createProjectEmbeddings } = await import(
               '../embeddings/manageEmbeddings'
             );
-            const { recordSync, shouldAutoSync: checkAutoSync } = await import(
-              '../../local/autoSyncManager'
-            );
+            const { recordSync } = await import('../../local/autoSyncManager');
             const { ProjectIdentifier } = await import('../../local/projectIdentifier');
 
             const storage = new LocalEmbeddingStorage();
@@ -132,53 +160,75 @@ export async function handleSemanticCompact(args: any): Promise<any> {
                 batchSize: normalizedBatchSize,
               });
               await recordSync(projectId);
+              embeddingSync = {
+                enabled: true,
+                checked: true,
+                updated: true,
+                mode: 'initial-create',
+                message: 'No embeddings existed; created project embeddings before retrieval.',
+              };
               logger.info('✅ Initial embeddings created', { projectPath: resolvedProjectPath });
             } else if (hasEmbeddings) {
-              // Step 2: Embeddings exist — check staleness and update if needed
-              // Always check, not just when autoSync flag or EMBEDDING_AUTO_SYNC env is set
-              let needsSync = autoSync; // explicit flag always triggers sync
-              let syncReason = autoSync ? 'Explicit --auto-sync flag' : '';
+              // Step 2: Embeddings exist; check actual file freshness before retrieval.
+              logger.info('Checking embedding freshness before context query', {
+                projectPath: resolvedProjectPath,
+                forced: autoSync,
+              });
 
-              if (!needsSync) {
-                try {
-                  const syncCheck = await checkAutoSync(projectId);
-                  if (syncCheck.shouldSync) {
-                    needsSync = true;
-                    syncReason = syncCheck.reason || 'Stale embeddings detected';
-                    logger.info('🔄 Stale embeddings detected; updating before context query', {
-                      projectPath: resolvedProjectPath,
-                      reason: syncReason,
-                      timeSinceLastSync: syncCheck.timeSinceLastSync
-                        ? `${Math.round(syncCheck.timeSinceLastSync / 1000)}s`
-                        : 'unknown',
-                    });
-                  }
-                } catch (error) {
-                  logger.debug('Staleness check failed; proceeding with existing embeddings', {
-                    error: error instanceof Error ? error.message : String(error),
-                  });
-                }
-              }
+              const syncResult = await checkStaleFiles({
+                projectPath: resolvedProjectPath,
+                autoUpdate: true,
+                batchSize: normalizedBatchSize,
+              });
 
-              if (needsSync) {
-                const syncResult = await checkStaleFiles({
-                  projectPath: resolvedProjectPath,
-                  autoUpdate: true,
-                  batchSize: normalizedBatchSize,
-                });
+              const pendingFileCount =
+                (syncResult?.staleCount ?? 0) +
+                (syncResult?.newCount ?? 0) +
+                (syncResult?.incompleteCount ?? 0);
+              const updateSucceeded = Boolean(syncResult?.updateResult?.success);
+
+              embeddingSync = {
+                enabled: true,
+                checked: true,
+                updated: updateSucceeded,
+                mode: 'incremental',
+                staleCount: syncResult?.staleCount ?? 0,
+                newCount: syncResult?.newCount ?? 0,
+                incompleteCount: syncResult?.incompleteCount ?? 0,
+                missingCount: syncResult?.missingCount ?? 0,
+                missingFilesRemoved: syncResult?.missingCleanupResult?.filesRemoved ?? 0,
+                missingEmbeddingsDeleted: syncResult?.missingCleanupResult?.embeddingsDeleted ?? 0,
+                updateAttempted: pendingFileCount > 0,
+                processedFiles: syncResult?.updateResult?.result?.processedFiles ?? 0,
+                embeddings: syncResult?.updateResult?.result?.embeddings ?? 0,
+                errors: syncResult?.updateResult?.result?.errors ?? [],
+                message: syncResult?.message,
+              };
+
+              if (updateSucceeded || pendingFileCount === 0) {
                 await recordSync(projectId);
-                logger.info('✅ Embedding sync completed before context query', {
-                  projectPath: resolvedProjectPath,
-                  reason: syncReason,
-                  staleCount: syncResult?.staleCount ?? 0,
-                  updated: syncResult?.updateResult?.updated ?? false,
-                  processedFiles: syncResult?.updateResult?.result?.processedFiles ?? 0,
-                  embeddings: syncResult?.updateResult?.result?.embeddings ?? 0,
-                });
               }
+
+              logger.info('Embedding freshness check completed before context query', {
+                projectPath: resolvedProjectPath,
+                staleCount: embeddingSync.staleCount,
+                newCount: embeddingSync.newCount,
+                incompleteCount: embeddingSync.incompleteCount,
+                missingCount: embeddingSync.missingCount,
+                updated: embeddingSync.updated,
+                processedFiles: embeddingSync.processedFiles,
+                embeddings: embeddingSync.embeddings,
+              });
             }
           }
         } catch (syncError) {
+          embeddingSync = {
+            ...embeddingSync,
+            checked: true,
+            updated: false,
+            error: syncError instanceof Error ? syncError.message : String(syncError),
+            message: 'Embedding sync failed; continuing with existing embeddings.',
+          };
           logger.warn('⚠️ Embedding sync failed; continuing with context generation', {
             projectPath: resolvedProjectPath,
             error: syncError instanceof Error ? syncError.message : String(syncError),
@@ -218,7 +268,9 @@ export async function handleSemanticCompact(args: any): Promise<any> {
                 coveragePct: systemMap.metadata.coveragePct,
                 anchorsHit: systemMap.metadata.anchorsHit,
                 queryFacets: systemMap.metadata.queryFacets,
+                embeddingSync,
               },
+              embeddingSync,
               usage: `System Map analysis: ${Math.min(tokenCount, maxTokens)} tokens with ${systemMap.metadata.coveragePct * 100}% coverage`,
             };
           } catch (error) {
@@ -230,6 +282,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
 
         // Resolve embedding similarity scores to feed into ranking
         let embeddingScores: Map<string, number> | undefined;
+        let semanticMatches: SemanticChunkMatch[] | undefined;
         let embeddingsUsed = false;
 
         const enhancedAvailable = EnhancedSemanticCompactor.isEnhancedModeAvailable();
@@ -242,22 +295,36 @@ export async function handleSemanticCompact(args: any): Promise<any> {
 
             if (LocalEmbeddingStorage.isEnabled()) {
               const storage = new LocalEmbeddingStorage();
-              const projectInfo = await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
+              const projectInfo =
+                await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
               const projectId = projectInfo.id;
 
               // Embeddings were ensured above; now query them
               const stats = await storage.getProjectStats(projectId);
               if (stats && stats.totalChunks > 0) {
-                const queryEmbedding = await embeddingGenerator.generateQueryEmbedding(query, projectId);
+                const queryEmbedding = await embeddingGenerator.generateQueryEmbedding(
+                  query,
+                  projectId
+                );
                 const similarChunks = await storage.searchSimilarEmbeddings(
                   projectId,
                   queryEmbedding,
-                  Math.max(maxSimilarChunks, 30),
+                  Math.max(maxSimilarChunks * 10, 150), // Retrieve a deep pool of chunks to guarantee many unique files
                   0.0 // Get all, we'll use similarity as a score
                 );
 
                 if (similarChunks.length > 0) {
                   embeddingScores = new Map();
+                  semanticMatches = similarChunks.map((sc, index) => ({
+                    filePath: sc.chunk.filePath,
+                    similarity: sc.similarity,
+                    content: sc.chunk.content,
+                    startLine: sc.chunk.metadata.startLine,
+                    endLine: sc.chunk.metadata.endLine,
+                    symbols: sc.chunk.metadata.symbols,
+                    type: sc.chunk.metadata.type,
+                    semanticRank: index + 1,
+                  }));
                   for (const sc of similarChunks) {
                     const filePath = sc.chunk.filePath;
                     // Aggregate: keep max similarity per file
@@ -306,6 +373,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             attackPlan: attackPlan as any,
             excludePatterns,
             embeddingScores,
+            semanticMatches,
           });
 
           if (enhancedResult.success) {
@@ -314,10 +382,14 @@ export async function handleSemanticCompact(args: any): Promise<any> {
               success: true,
               content,
               compactedContent: content,
-              ...(showmetadata ? { metadata: enhancedResult.metadata } : {}),
+              metadata: {
+                ...enhancedResult.metadata,
+                filesProcessed: enhancedResult.metadata.filesScanned,
+              },
               usage: `Enhanced context analysis: ${enhancedResult.metadata.bundleTokens} tokens in ${enhancedResult.jumpTargets.length} locations${embeddingsUsed ? ' (embedding-enhanced)' : ''}`,
               enhanced: true,
               embeddingsUsed,
+              embeddingSync,
               jumpTargets: enhancedResult.jumpTargets,
               byFile: enhancedResult.byFile,
               answerDraft: enhancedResult.answerDraft,
@@ -347,7 +419,9 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       try {
         // Fall back to standard semantic compaction
         logger.info('📝 Using standard semantic compaction', {
-          reason: folderPath ? 'Folder-specific analysis' : 'No query provided or enhanced mode unavailable',
+          reason: folderPath
+            ? 'Folder-specific analysis'
+            : 'No query provided or enhanced mode unavailable',
         });
         // Handle folder-specific analysis if folderPath is provided, or general analysis with exclude patterns
         let analysisPath = resolvedProjectPath;
@@ -434,10 +508,10 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             });
 
             process.on('exit', () => {
-              fs.rm(tempDir, { recursive: true, force: true }).catch(() => { });
+              fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
             });
             process.on('beforeExit', () => {
-              fs.rm(tempDir, { recursive: true, force: true }).catch(() => { });
+              fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
             });
           } catch (error) {
             await fs.rm(tempDir, { recursive: true, force: true });
@@ -465,10 +539,10 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         // Create relevance context if query provided
         const relevanceContext = query
           ? {
-            query,
-            taskType,
-            maxTokens,
-          }
+              query,
+              taskType,
+              maxTokens,
+            }
           : undefined;
 
         // Process and compact - all local, no external API calls
@@ -533,7 +607,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
           success: true,
           content: formattedContent,
           compactedContent: formattedContent,
-          ...(showmetadata ? { metadata: responseMetadata } : {}),
+          metadata: responseMetadata,
+          embeddingSync,
           usage: `Reduced context from ${originalTokens} to ${finalTokens} tokens (${Math.round(((result as any).compressionRatio || 1) * 100)}% compression, cap=${maxTokens})`,
         };
       } catch (error) {
@@ -605,7 +680,9 @@ function formatEnhancedContextOutput(
       sections.push(`- **Symbols**: ${symbolParts.join(', ')}`);
 
       const roles = Array.from(new Set(targets.map(t => t.role).filter(Boolean)));
-      const avgConf = Math.round((targets.reduce((sum, t) => sum + t.confidence, 0) / targets.length) * 100);
+      const avgConf = Math.round(
+        (targets.reduce((sum, t) => sum + t.confidence, 0) / targets.length) * 100
+      );
       const roleStr = roles.length > 0 ? `[${roles.join(', ')}] ` : '';
 
       const allWhys = targets.flatMap(t => t.why || []);

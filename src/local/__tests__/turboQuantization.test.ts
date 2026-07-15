@@ -45,7 +45,9 @@ function randomUnitVector(dim: number, seed: number = 42): number[] {
 
 // Helper: cosine similarity in float32
 function cosineSim(a: number[], b: number[]): number {
-  let dot = 0, na = 0, nb = 0;
+  let dot = 0,
+    na = 0,
+    nb = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     na += a[i] * a[i];
@@ -63,18 +65,21 @@ describe('TurboQuantization', () => {
   });
 
   describe('turboQuantize / turboDequantize roundtrip', () => {
-    it.each([2, 4] as TurboBits[])('should roundtrip at %d-bit with high cosine similarity', (bits) => {
-      const vec = randomUnitVector(DIM, 123);
-      const quantized = turboQuantize(vec, bits, SEED);
-      const reconstructed = turboDequantize(quantized);
+    it.each([2, 4] as TurboBits[])(
+      'should roundtrip at %d-bit with high cosine similarity',
+      bits => {
+        const vec = randomUnitVector(DIM, 123);
+        const quantized = turboQuantize(vec, bits, SEED);
+        const reconstructed = turboDequantize(quantized);
 
-      expect(reconstructed.length).toBe(DIM);
+        expect(reconstructed.length).toBe(DIM);
 
-      const sim = cosineSim(vec, reconstructed);
-      // 4-bit should be > 0.99, 2-bit should be > 0.92
-      const minSim = bits === 4 ? 0.99 : 0.90;
-      expect(sim).toBeGreaterThan(minSim);
-    });
+        const sim = cosineSim(vec, reconstructed);
+        // 4-bit should be > 0.99, 2-bit should be > 0.92
+        const minSim = bits === 4 ? 0.99 : 0.9;
+        expect(sim).toBeGreaterThan(minSim);
+      }
+    );
 
     it('should handle zero vectors', () => {
       const zero = new Array(DIM).fill(0);
@@ -123,8 +128,8 @@ describe('TurboQuantization', () => {
       // Create a query and several vectors with known similarity ordering
       const query = randomUnitVector(DIM, 1);
       const vectors = [
-        randomUnitVector(DIM, 2),  // random, moderate similarity
-        randomUnitVector(DIM, 3),  // random, moderate similarity
+        randomUnitVector(DIM, 2), // random, moderate similarity
+        randomUnitVector(DIM, 3), // random, moderate similarity
         query.map(v => v + 0.01 * Math.random()), // very similar to query
       ];
 
@@ -164,7 +169,7 @@ describe('TurboQuantization', () => {
   });
 
   describe('serialization', () => {
-    it.each([2, 4] as TurboBits[])('should serialize/deserialize at %d-bit', (bits) => {
+    it.each([2, 4] as TurboBits[])('should serialize/deserialize at %d-bit', bits => {
       const vec = randomUnitVector(DIM, 333);
       const original = turboQuantize(vec, bits, SEED);
 
@@ -226,7 +231,7 @@ describe('TurboQuantization', () => {
       const q = turboQuantize(vec, 2, SEED);
       const metrics = calculateTurboQuantizationError(vec, q);
 
-      expect(metrics.cosineSimilarity).toBeGreaterThan(0.90);
+      expect(metrics.cosineSimilarity).toBeGreaterThan(0.9);
     });
   });
 

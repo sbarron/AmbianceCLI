@@ -164,7 +164,8 @@ export const manageEmbeddingsTool = {
       quantization: {
         type: 'string',
         enum: ['turbo4', 'turbo2', 'int8', 'float32'],
-        description: 'Embedding quantization format (for create/update actions). If the requested format differs from stored embeddings, triggers a full re-index. Options: turbo4 (4-bit, recommended), turbo2 (2-bit, max compression), int8 (legacy 8-bit), float32 (no quantization).',
+        description:
+          'Embedding quantization format (for create/update actions). If the requested format differs from stored embeddings, triggers a full re-index. Options: turbo4 (4-bit, recommended), turbo2 (2-bit, max compression), int8 (legacy 8-bit), float32 (no quantization).',
       },
     },
     required: [],

@@ -2,7 +2,7 @@
  * Tests for automatic embedding synchronization manager
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   getAutoSyncThresholdMs,
   isAutoSyncEnabled,

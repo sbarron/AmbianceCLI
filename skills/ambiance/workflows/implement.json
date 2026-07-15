@@ -14,13 +14,16 @@
       "command": "context",
       "args": [
         "${query}",
+        "--format",
+        "index",
+        "--embeddings",
         "--json",
         "--project-path",
         "${projectPath}",
         "--task-type",
         "implement",
         "--max-tokens",
-        "2400"
+        "1600"
       ]
     }
   ]

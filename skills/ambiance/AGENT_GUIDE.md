@@ -1,260 +1,68 @@
 # Ambiance Agent Quick Reference
 
-Fast decision guide for agents using the `ambiance` CLI.
+Ambiance combines semantic frontier discovery with deterministic code verification. The host agent plans the investigation and writes the final answer.
 
-## Session Start
+## Choose a Path
 
-1. `ambiance doctor --json`
-2. **Initial Orientation (IMPORTANT - Read This First)**:
-   - Embeddings are automatically created and refreshed by the `context` command when `--embeddings` flag is used. No manual setup needed.
-   ```bash
-   # Start with manifest for quick file/function overview
-   ambiance manifest --exports-only --max-files 50 --format flat --json --project-path <path>
+Known function, class, path, route, or environment key:
 
-   # Then get project structure
-   ambiance hints --json --project-path <path> --max-files 100
+```text
+ambiance context "<exact identifiers>" --format index --no-embeddings --json --project-path <path> --max-tokens 1200
+```
+
+Unknown vocabulary, behavior question, or cross-system flow:
+
+```text
+ambiance embeddings status --json --project-path <path>
+ambiance context "<one behavior or boundary>" --format index --embeddings --json --project-path <path> --max-tokens 1600 --max-similar-chunks 12
+```
+
+The embedding-assisted path incrementally repairs new, stale, deleted, and tracked zero-chunk files before searching. A full rebuild is not the normal refresh path.
+
+## Combined Search Loop
+
+1. Use semantic chunks to discover relevant modules, source ranges, and project vocabulary.
+2. Read `metadata.retrievalStrategy`, `semanticCandidates`, `moduleCoverage`, and `embeddingSync`.
+3. Build one exact follow-up query from discovered symbols:
+
+   ```text
+   ambiance context "<discovered symbols>" --format index --no-embeddings --json --project-path <path> --max-tokens 1200
    ```
 
-See **"Initial Project Discovery"** section below for multi-pass context strategy.
-
-## Choose The Right Command
-
-- **Quick file/function listing**: `ambiance manifest --exports-only --json --project-path <path>` (NEW!)
-- Understand feature or architecture: `ambiance context "<query>" --json --project-path <path>`
-- Get project overview: `ambiance hints --json --project-path <path>`
-- Debug from logs: `ambiance debug "<log text>" --json --project-path <path>`
-- Structural code search (AST-only): `ambiance grep "<ast pattern>" --json --project-path <path>`
-- File summary: `ambiance summary <file> --json`
-- Frontend mapping: `ambiance frontend --json --project-path <path>`
-
-## Search Routing Rules
-
-Use this order when embeddings/index are available:
-
-1. Semantic understanding first (default enhanced format, symbol-anchored query):
-   `ambiance context "<symbol-anchored query>" --json --project-path <path> --embeddings`
-2. Compact navigation second (only when you need jump targets without code snippets):
-   `ambiance context "<query>" --format index --json --project-path <path> --embeddings`
-3. Structural confirmation third:
-   `ambiance grep "<ast pattern>" --json --project-path <path>`
-4. Lexical detail fill-in last:
-   `rg -n "<term>" <path>` (or `grep -R` fallback), ideally scoped to files from prior steps
-
-**Default to `context` (no format flag).** Only use `--format index` when you specifically need file:line jump targets.
-
-Only use `ambiance grep` when the task explicitly needs AST structure/captures:
-   - "find all functions/classes/import forms"
-   - codemod/refactor pattern matching
-   - syntactic queries where regex text search is noisy
-
-**Do NOT abandon the ambiance workflow early** — complete context → grep → summary steps before falling back to Read/Grep/Glob.
-
-Fallback (if embeddings/index are unavailable): start with native lexical search, then grep.
-
-## Query Strategy: Symbol-Anchored Queries
-
-The single biggest factor in result quality is query specificity. Use concrete function/class/variable names, not generic keywords.
-
-**Rules:**
-- Include specific symbol names you know or discovered from `hints`/`summary`/`manifest`
-- Include library-specific identifiers (e.g., `Hono`, `D1Database`, `R2Bucket`)
-- Avoid conversational phrasing — ambiance uses semantic similarity, not Q&A
-- Fewer specific symbols beat many generic keywords
-
-**Examples:**
-- **Strong** (specific symbols): `"generateThumbnailForKey presignR2GetUrl cf.image uploadR2Object"` → 1 file, 4 symbols, zero noise
-- **Strong** (library-anchored): `"Supabase auth session refresh middleware validateToken"` → focused results
-- **Weak** (generic keywords): `"image upload thumbnail generation R2 storage cf.image transform resize"` → 10 files, 40% noise
-- **Weak** (conversational): `"What is the status of auth?"` → poor retrieval
-
-## Initial Project Discovery
-
-⚠️ **CRITICAL**: Never mix frontend and backend symbols in first context query.
-
-### The Problem with Broad Queries
-
-❌ **DON'T DO THIS:**
-```bash
-# BAD: Mixed domains, no runtime context
-ambiance context "IngestionService ComputationService Dashboard FastAPI APIClient"
-```
-
-**Why this fails:**
-- Mixes 3 intents: backend services + API framework + frontend client
-- Class names without runtime anchors get low relevance
-- "Sticky" symbols (like `APIClient`) dominate, missing architecture
-- Result: 1 file instead of 8-12
-
-### Multi-Pass Strategy (Recommended)
-
-✅ **DO THIS instead - run 3-4 focused passes:**
-
-#### 1. Start with Manifest (Optional but Helpful)
-```bash
-ambiance manifest --exports-only --max-files 50 --format flat --json --project-path <path>
-```
-→ Quick scan of exported functions/classes to identify entry points
-
-#### 2. Backend Topology First
-```bash
-ambiance context "python services main.py health_check scheduler loop run_ingestion_job run_generation_loop run_tracking_loop" \
-  --format index --json --project-path <path> --embeddings
-```
-
-**Why this works:**
-- Entry point anchors (`main.py`, `health_check`)
-- Runtime verbs (`loop`, `run_`, `scheduler`)
-- Single domain (Python backend only)
-- No frontend terms to confuse retrieval
-
-#### 3. Infrastructure Second
-```bash
-ambiance context "redis stream marketforge:events xadd xreadgroup EventPublisher EventConsumer data_ingested signals_generated" \
-  --format index --json --project-path <path>
-```
-
-**Focus:** Data stores, message brokers, event systems
-
-#### 4. API Wiring Third
-```bash
-ambiance context "FastAPI include_router APIRouter monitoring charts data ml_builder event_stream health_checker" \
-  --format index --json --project-path <path>
-```
-
-**Focus:** HTTP routes, endpoints, backend API structure (no frontend!)
-
-#### 5. Frontend Last (if applicable)
-```bash
-ambiance context "react router Dashboard SignalsPage InsightsPage AlertsPage ChartsPage DataPage MLBuilderPage apiClient" \
-  --format index --json --project-path <path>
-```
-
-**Focus:** Pure frontend - components, pages, client routing
-
-### Query Construction Rules
-
-#### ✅ USE THESE (High Signal):
-
-| Category | Good Terms | Why |
-|----------|-----------|-----|
-| **Entry Points** | `main.py`, `index.ts`, `app.py`, `server.ts` | Actual runtime entry |
-| **Schedulers** | `scheduler`, `loop`, `cron`, `interval`, `run_*` | Continuous processes |
-| **Verbs** | `run_`, `process_`, `handle_`, `execute_` | Actions, not just nouns |
-| **Infrastructure** | `redis`, `postgres`, `rabbitmq`, `kafka`, `stream` | Concrete tech |
-| **Wiring** | `router`, `include_router`, `Blueprint`, `mount` | Connection points |
-| **Events** | `xadd`, `publish`, `emit`, `dispatch`, `subscribe` | Data flow |
-
-#### ❌ AVOID THESE (Low Signal):
-
-| Category | Bad Terms | Why |
-|----------|-----------|-----|
-| **Bare Classes** | `UserService`, `DataProcessor` | No runtime context |
-| **Generic** | `Service`, `Manager`, `Handler` | Too abstract |
-| **Mixed Domains** | `APIClient` + `FastAPI` in same query | Frontend + backend |
-| **Interfaces** | `IUserRepository`, `IDataStore` | Not runtime code |
-
-### Expected Results
-
-Good orientation should give you:
-
-- **Backend:** 3-6 files covering entry points and services
-- **Infrastructure:** 2-4 files showing connections and setup
-- **API:** 3-5 files with routes and handlers
-- **Frontend:** 4-8 files with components and routing
-- **Total:** 12-25 unique files across all passes
-
-### If Results Are Poor
-
-**Symptom:** Only 1-2 files returned
-
-**Likely Causes:**
-- Mixed-domain query
-- Using class names without verbs
-- Embeddings not synced
-
-**Fixes:**
-- Split into separate backend/frontend passes
-- Add entry point file names (`main.py`, `index.ts`)
-- Use runtime verbs (`run_`, `loop`)
-- Add `--embeddings` flag
-- Run `manifest` first to see what's available
-
-**Recipe:** See `ambiance skill recipe orientation --json` for complete workflow
-
-## Discover Full Details (No Doc Digging)
-
-Use CLI help first to inspect current command flags and usage:
-
-- `ambiance --help`
-- `ambiance --help --expanded`
-- `ambiance <command> --help` (examples: `ambiance context --help`, `ambiance embeddings --help`)
-
-Use skill introspection commands as the canonical machine-readable source:
-
-- List all templates: `ambiance skill list --json`
-- Get a workflow definition: `ambiance skill workflow <understand|debug|implement|review> --json`
-- Get command recipe details: `ambiance skill recipe <context|hints|debug|grep|summary|frontend|doctor|embeddings-status|packs-create|packs-list|packs-template> --json`
-
-Examples:
-
-- `ambiance skill workflow understand --json`
-- `ambiance skill recipe context --json`
-- `ambiance skill recipe embeddings-status --json`
-
-## JSON And Reliability Rules
-
-- Always pass `--json`.
-- Always pass explicit `--project-path` for project-wide commands.
-- Check `exitCode` and `success` before reading payload fields.
-- Use `--quiet` when needed to suppress non-essential stderr logs.
-
-## Command Pairing Patterns
-
-- New codebase:
-  1. `hints`
-  2. `context`
-
-- Error triage:
-  1. `debug`
-  2. `context --format index` on the identified area
-  3. `grep` for AST-structural confirmation
-  4. native `rg` in top files from `nextActions.openFiles`
-
-- Implementation prep:
-  1. `hints`
-  2. `context --task-type implement --format index`
-  3. `grep` to find existing AST coding patterns
-  4. native `rg` in top files from `byFile`
-
-- Review:
-  1. `context --task-type review --format index`
-  2. `grep` for security/anti-pattern AST checks
-  3. native `rg` for risky terms/secrets and exact string evidence
-
-## Context Format Choice
-
-- **Default `context`** (no `--format` flag): Enhanced output with jump targets, code snippets, answer analysis, evidence, and next actions. Best starting point for most queries.
-- **`--format index`**: Same analysis but omits code snippets — compact file:line jump targets only.
-
-Format policy:
-1. **Default to `context` (no format flag)** for full analysis with code snippets.
-2. Use `--format index` when you need compact jump-target-only output for navigation.
-
-Use `jumpTargets`, `byFile`, and `nextActions.openFiles` to decide where to run text search and edits.
-
-## Error Recovery
-
-- Embeddings not initialized or stale:
-  The `context` command automatically creates and refreshes embeddings when `--embeddings` is used.
-  For manual control: `ambiance embeddings create --json --project-path <path> --force true`
-
-## Index Hygiene
-
-1. Embeddings are automatically managed by the `context` command when `--embeddings` is used (created if missing, refreshed if stale).
-2. Check status for deep investigations: `ambiance embeddings status --json --project-path <path>`
-3. Use full rebuild only when needed: `embeddings create --force true` only for migration/incompatible model/corruption scenarios.
-
-- If semantic results are weak:
-  1. broaden `context` query
-  2. increase `--max-tokens`
-  3. switch to `grep` for deterministic structural search
+4. Inspect the selected files with `summary`, `grep`, and exact host file reads.
+5. Check definition, caller/wiring, configuration, effects, tests, and failure handling.
+6. Challenge the leading hypothesis with one competing module or negative check.
+7. Stop when further results add no new module, relationship, or evidence role.
+
+If a conceptual query reports `moduleCoverage: 1`, do not conclude yet.
+
+## Read JSON Results
+
+- `jumpTargets`: grounded semantic and structural locations;
+- `byFile`: targets grouped by file;
+- `metadata.retrievalStrategy`: deterministic, hybrid-symbol, or hybrid-concept;
+- `metadata.semanticCandidates`: size of the semantic frontier considered;
+- `metadata.moduleCoverage`: represented module prefixes;
+- `embeddingSync`: freshness work and any update errors;
+- `evidence`: compact source references;
+- `nextActions`: suggestions requiring agent judgment;
+- `answerDraft`: routing metadata, never a final answer.
+
+## Bounded Escalation
+
+Normal conceptual work is one semantic frontier plus one deterministic drilldown. Add at most one disconfirming query. If a named gap still remains, use one bounded scout with the current targets, missing role, tool/token limit, and a requirement for file/line evidence. Do not start multiple search agents.
+
+## Command Choice
+
+| Need | Command |
+|---|---|
+| Unknown vocabulary or cross-system behavior | `context --embeddings --format index` |
+| Known identifiers | `context --no-embeddings --format index` |
+| AST structure | `grep` |
+| One-file API | `summary` |
+| Project orientation without a usable index | `hints`, `manifest` |
+| Embedding truth and refresh | `embeddings status`, `check_stale`, `validate` |
+| Log-driven diagnosis | `debug` |
+| Frontend topology | `frontend` |
+
+Use `ambiance doctor --json` for command failures and `ambiance skill verify --json` after changing skill artifacts.

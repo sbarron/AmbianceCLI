@@ -19,7 +19,14 @@ import {
 import { logRetrievalTelemetry } from '../telemetry';
 import * as fs from 'fs';
 import * as path from 'path';
-import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding, isTurboQuantized, turboDequantize, TurboQuantizedEmbedding } from '../../local/quantization';
+import {
+  isQuantized,
+  dequantizeInt8ToFloat32,
+  QuantizedEmbedding,
+  isTurboQuantized,
+  turboDequantize,
+  TurboQuantizedEmbedding,
+} from '../../local/quantization';
 
 export class SharedRetriever implements Retriever {
   private storage: LocalEmbeddingStorage;
@@ -660,8 +667,16 @@ export class SharedRetriever implements Retriever {
     b: number[] | QuantizedEmbedding | TurboQuantizedEmbedding
   ): number {
     // Normalize all formats to float32 arrays
-    const aFloat32 = isTurboQuantized(a) ? turboDequantize(a) : isQuantized(a) ? dequantizeInt8ToFloat32(a) : a;
-    const bFloat32 = isTurboQuantized(b) ? turboDequantize(b) : isQuantized(b) ? dequantizeInt8ToFloat32(b) : b;
+    const aFloat32 = isTurboQuantized(a)
+      ? turboDequantize(a)
+      : isQuantized(a)
+        ? dequantizeInt8ToFloat32(a)
+        : a;
+    const bFloat32 = isTurboQuantized(b)
+      ? turboDequantize(b)
+      : isQuantized(b)
+        ? dequantizeInt8ToFloat32(b)
+        : b;
 
     if (aFloat32.length !== bFloat32.length) return 0;
 

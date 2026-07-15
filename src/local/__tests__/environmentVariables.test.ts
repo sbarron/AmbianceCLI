@@ -23,7 +23,7 @@ jest.mock('sqlite3', () => ({
 }));
 
 // Mock dependencies
-jest.mock('@xenova/transformers', () => ({
+jest.mock('@huggingface/transformers', () => ({
   pipeline: jest.fn().mockResolvedValue({
     mockImplementation: (texts: string[]) =>
       Promise.resolve({
@@ -133,16 +133,14 @@ describe('Environment Variable Integration', () => {
       await generator.dispose();
     });
 
-    test('should handle Ambiance API with environment variable model', () => {
+    test('should keep local embeddings as the default when a legacy Ambiance key is present', () => {
       process.env.AMBIANCE_API_KEY = 'test-key';
       process.env.LOCAL_EMBEDDING_MODEL = 'advanced-neural-dense';
 
       const generator = new LocalEmbeddingGenerator();
 
-      // Should still prioritize Ambiance API over local model
       expect(logger.info).toHaveBeenCalledWith(
-        '🚀 Embedding generator initialized with Ambiance API',
-        expect.any(Object)
+        '✅ Local embedding provider (transformers.js) available as default'
       );
 
       delete process.env.AMBIANCE_API_KEY;

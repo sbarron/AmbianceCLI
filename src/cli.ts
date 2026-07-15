@@ -14,6 +14,11 @@ import type { ManageEmbeddingsAction } from './tools/localTools/embeddingManagem
 import * as fs from 'fs';
 import * as path from 'path';
 
+// Default embeddings to true globally unless explicitly disabled
+if (process.env.USE_LOCAL_EMBEDDINGS === undefined) {
+  process.env.USE_LOCAL_EMBEDDINGS = 'true';
+}
+
 function loadPackageJson(): any {
   const candidates = [
     path.resolve(__dirname, '..', '..', 'package.json'),
@@ -114,7 +119,7 @@ function estimateEmbeddingTime(fileCount: number, avgFileSize: number = 5000): s
 }
 
 // Make this file a module
-export { };
+export {};
 
 type OptionValue = string | number | boolean | string[] | undefined;
 
@@ -267,7 +272,8 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
       {
         name: 'EMBEDDING_QUANTIZATION',
         defaultValue: 'turbo4',
-        description: 'Embedding quantization mode. Options: turbo4 (4-bit, recommended), turbo2 (2-bit, max compression), true/int8 (legacy 8-bit), false (no quantization).',
+        description:
+          'Embedding quantization mode. Options: turbo4 (4-bit, recommended), turbo2 (2-bit, max compression), true/int8 (legacy 8-bit), false (no quantization).',
       },
       {
         name: 'EMBEDDING_QUOTAS',
@@ -608,7 +614,9 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log(
     '  packs                  Context pack workflows (create/list/get/delete/template/ui)'
   );
-  console.log('  embeddings             Embedding management and workspace configuration (default: turbo4 quantization)');
+  console.log(
+    '  embeddings             Embedding management and workspace configuration (default: turbo4 quantization)'
+  );
   console.log('  doctor                 Environment/readiness diagnostics');
   console.log('  skill                  Agent skill helpers (verify/list/workflow/recipe)');
   console.log('  migrate                Migration helpers (MCP -> CLI)');
@@ -1040,7 +1048,7 @@ async function executeToolCommand(
         const { query: _query, ...parsedArgs } = parsed;
         result = await handleSemanticCompact({
           query,
-          projectPath: globalOptions.projectPath || await detectProjectPath(),
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
           format: resolveToolFormat(globalOptions, 'enhanced'),
           ...parsedArgs,
         });
@@ -1060,7 +1068,7 @@ async function executeToolCommand(
         ];
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleProjectHints({
-          projectPath: globalOptions.projectPath || await detectProjectPath(),
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
           format: resolveToolFormat(globalOptions, 'compact'),
           ...parsedArgs,
         });
@@ -1109,7 +1117,7 @@ async function executeToolCommand(
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
 
         result = await handleProjectManifest({
-          projectPath: globalOptions.projectPath || await detectProjectPath(),
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
           format: resolveToolFormat(globalOptions, 'compact') as
             | 'compact'
             | 'tree'
@@ -1126,7 +1134,7 @@ async function executeToolCommand(
         const allowedKeys = ['includeContent', 'subtree', 'maxFiles'];
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleFrontendInsights({
-          projectPath: globalOptions.projectPath || await detectProjectPath(),
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
           format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
@@ -1151,7 +1159,7 @@ async function executeToolCommand(
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleLocalDebugContext({
           logText,
-          projectPath: globalOptions.projectPath || await detectProjectPath(),
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
           format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
@@ -1227,7 +1235,7 @@ async function executeToolCommand(
         }
 
         const grepArgs: Record<string, unknown> = {
-          projectPath: globalOptions.projectPath || await detectProjectPath(),
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
           ...parsedArgs,
         };
         if (pattern) {
@@ -1294,8 +1302,9 @@ async function executeToolCommand(
         } catch (parseError) {
           exitWithError({
             command: 'compare',
-            message: `Error parsing models: ${parseError instanceof Error ? parseError.message : String(parseError)
-              }`,
+            message: `Error parsing models: ${
+              parseError instanceof Error ? parseError.message : String(parseError)
+            }`,
             options: globalOptions,
             exitCode: EXIT_CODES.USAGE_ERROR,
           });
@@ -1334,7 +1343,7 @@ async function executeToolCommand(
       case 'doctor': {
         const { runDoctor } = await import('./runtime/doctor');
         result = await runDoctor({
-          detectedProjectPath: globalOptions.projectPath || await detectProjectPath(),
+          detectedProjectPath: globalOptions.projectPath || (await detectProjectPath()),
         });
         break;
       }
@@ -1365,16 +1374,16 @@ async function executeToolCommand(
           const workflowFiles =
             fs.existsSync(workflowsDir) && fs.statSync(workflowsDir).isDirectory()
               ? fs
-                .readdirSync(workflowsDir)
-                .filter(f => f.endsWith('.json'))
-                .sort()
+                  .readdirSync(workflowsDir)
+                  .filter(f => f.endsWith('.json'))
+                  .sort()
               : [];
           const recipeFiles =
             fs.existsSync(recipesDir) && fs.statSync(recipesDir).isDirectory()
               ? fs
-                .readdirSync(recipesDir)
-                .filter(f => f.endsWith('.json'))
-                .sort()
+                  .readdirSync(recipesDir)
+                  .filter(f => f.endsWith('.json'))
+                  .sort()
               : [];
 
           if (subcommand === 'list') {
@@ -1443,6 +1452,7 @@ async function executeToolCommand(
               sourceDir: baseDir,
               targetDir,
               dryRun,
+              quiet: isJsonMode(globalOptions) || globalOptions.quiet === true,
             });
             result = report;
           } catch (e) {
@@ -1468,7 +1478,7 @@ async function executeToolCommand(
 
         const { runSkillVerify } = await import('./runtime/skill/verify');
         const report = await runSkillVerify({
-          detectedProjectPath: globalOptions.projectPath || await detectProjectPath(),
+          detectedProjectPath: globalOptions.projectPath || (await detectProjectPath()),
           availableCommands: commands,
         });
         result = report;
@@ -1518,7 +1528,7 @@ async function executeToolCommand(
           'id',
         ]);
 
-        const projectPath = globalOptions.projectPath || await detectProjectPath();
+        const projectPath = globalOptions.projectPath || (await detectProjectPath());
         const packsDir = typeof parsed.packsDir === 'string' ? parsed.packsDir : undefined;
         const resolvedIdentifier =
           (typeof parsed.id === 'string' && parsed.id.length > 0 ? parsed.id : undefined) ||
@@ -1715,8 +1725,12 @@ async function executeToolCommand(
         }
 
         const { handleManageEmbeddings } = await import('./tools/localTools/embeddingManagement');
-        const action = (toolArgs.find(arg => !arg.startsWith('--')) ||
-          'status') as ManageEmbeddingsAction;
+        const rawActionIndex = toolArgs.findIndex(arg => !arg.startsWith('--'));
+        const rawAction = rawActionIndex >= 0 ? toolArgs[rawActionIndex] : 'status';
+        const action = rawAction.replace(/-/g, '_') as ManageEmbeddingsAction;
+        if (rawActionIndex >= 0) {
+          toolArgs[rawActionIndex] = action;
+        }
         let projectIdentifier: string | undefined;
         let filePathArg: string | undefined;
 
@@ -1858,7 +1872,7 @@ async function executeToolCommand(
 
         // Special handling for check_stale - show project path and confirm if autoUpdate
         if (action === 'check_stale') {
-          const projectPath = globalOptions.projectPath || await detectProjectPath();
+          const projectPath = globalOptions.projectPath || (await detectProjectPath());
 
           if (!isJsonMode(globalOptions)) {
             // Always show which project is being checked
@@ -1912,7 +1926,7 @@ async function executeToolCommand(
 
         result = await handleManageEmbeddings({
           action,
-          projectPath: globalOptions.projectPath || await detectProjectPath(),
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
           projectIdentifier,
           ...mergedArgs,
         });
@@ -1942,7 +1956,7 @@ async function executeToolCommand(
         }
 
         result = await handler({
-          path: globalOptions.projectPath || await detectProjectPath(),
+          path: globalOptions.projectPath || (await detectProjectPath()),
           ...parseToolSpecificArgs(toolArgs, ['path', 'force', 'skipCloud', 'pattern']),
         });
         break;
@@ -1976,7 +1990,9 @@ async function executeToolCommand(
         clipboardy.default.writeSync(output);
         console.error('📋 Copied to clipboard!');
       } catch (err) {
-        console.error(`⚠️ Failed to copy to clipboard: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(
+          `⚠️ Failed to copy to clipboard: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
 
@@ -1989,8 +2005,9 @@ async function executeToolCommand(
   } catch (error) {
     exitWithError({
       command,
-      message: `Error executing ${command} command: ${error instanceof Error ? error.message : String(error)
-        }`,
+      message: `Error executing ${command} command: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
       options: globalOptions,
       exitCode: EXIT_CODES.RUNTIME_ERROR,
     });

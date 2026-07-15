@@ -125,6 +125,37 @@ function validateSkillFrontmatter(skillMdPath: string, errors: string[]): void {
   }
 }
 
+function validateAgentUsageGuidance(skillMdPath: string, errors: string[]): void {
+  let raw = '';
+  try {
+    raw = fs.readFileSync(skillMdPath, 'utf8');
+  } catch {
+    return;
+  }
+
+  const requiredGuidance: Array<[string, RegExp]> = [
+    ['adaptive hybrid workflow', /^## Adaptive Hybrid Workflow$/m],
+    ['deterministic no-embedding example', /--format index[^\n]*--no-embeddings/],
+    ['semantic frontier example', /--format index[^\n]*--embeddings/],
+    ['local-maximum guard', /local-maximum check/i],
+    ['zero-chunk refresh guidance', /zero-chunk/i],
+    ['bounded escalation policy', /^## Bounded Escalation$/m],
+    ['multi-agent cost guard', /Do not start with multiple search agents/i],
+    ['jumpTargets evidence contract', /`jumpTargets`/],
+    [
+      'answerDraft interpretation',
+      /`answerDraft`[^\n]*(not a final answer|never the final response)/i,
+    ],
+    ['grounded stop conditions', /^## Stop Conditions$/m],
+  ];
+
+  for (const [label, pattern] of requiredGuidance) {
+    if (!pattern.test(raw)) {
+      errors.push(`skills/ambiance/SKILL.md missing ${label}`);
+    }
+  }
+}
+
 function findSkillsBaseDir(): string | undefined {
   const envOverride = process.env.AMBIANCE_SKILLS_DIR?.trim();
   if (envOverride) {
@@ -177,6 +208,7 @@ export async function runSkillVerify(args: {
     errors.push('skills/ambiance directory not found');
   } else {
     validateSkillFrontmatter(path.join(baseDir, 'SKILL.md'), errors);
+    validateAgentUsageGuidance(path.join(baseDir, 'SKILL.md'), errors);
 
     const agentsYamlPath = path.join(baseDir, 'agents', 'openai.yaml');
     if (!fs.existsSync(agentsYamlPath)) {

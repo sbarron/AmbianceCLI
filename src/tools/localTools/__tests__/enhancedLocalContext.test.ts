@@ -9,7 +9,14 @@
  * @context: Ensures reliability and deterministic behavior of enhanced local context
  */
 
-import { localContext, LocalContextRequest, LocalContextResponse } from '../enhancedLocalContext';
+import {
+  deduplicateJumpTargets,
+  extractExplicitSymbolTokens,
+  gatherSemanticChunkCandidates,
+  localContext,
+  LocalContextRequest,
+  LocalContextResponse,
+} from '../enhancedLocalContext';
 import { runAstQueriesOnFiles } from '../astQueryEngine';
 import { rankCandidatesWithScoring } from '../candidateRanking';
 import { assembleMiniBundle } from '../miniBundleAssembler';
@@ -91,6 +98,10 @@ jest.mock('fs', () => ({
   readFileSync: jest.fn(),
 }));
 
+jest.mock('../../utils/pathUtils', () => ({
+  validateAndResolvePath: jest.fn((projectPath: string) => projectPath),
+}));
+
 // Mock FileDiscovery to avoid touching real filesystem
 jest.mock('../../../core/compactor/fileDiscovery', () => {
   const actual = jest.requireActual('../../../core/compactor/fileDiscovery');
@@ -168,6 +179,16 @@ describe('Enhanced Local Context - Unit Tests', () => {
       expect(results.length).toBeGreaterThan(0);
       expect(results.some(r => r.symbol.includes('prepare'))).toBe(true);
     });
+
+    it('should find exact symbols beyond exports and calls', async () => {
+      const queries = [{ kind: 'symbol' as const, name: /initializeDatabase/ }];
+
+      const results = await runAstQueriesOnFiles(SAMPLE_FILES.slice(0, 1), queries, 10);
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some(r => r.symbol === 'initializeDatabase')).toBe(true);
+      expect(results[0].reasons.some(reason => reason.includes('symbol matches'))).toBe(true);
+    });
   });
 
   describe('Candidate Ranking', () => {
@@ -214,6 +235,183 @@ describe('Enhanced Local Context - Unit Tests', () => {
       expect(ranked).toHaveLength(2);
       expect(ranked[0].symbol).toBe('initializeDatabase'); // Should be ranked higher
       expect(ranked[0].finalScore).toBeGreaterThan(ranked[1].finalScore);
+    });
+
+    it('should rank exact symbol matches before semantic file matches', async () => {
+      const exactMatch = {
+        file: 'src/runtime/embeddings/manageEmbeddings.ts',
+        symbol: 'checkStaleFiles',
+        start: 1053,
+        end: 1269,
+        kind: 'function',
+        score: 0.2,
+        reasons: ['symbol matches: checkStaleFiles'],
+        role: 'symbol',
+      };
+      const semanticMatch = {
+        file: 'src/local/enhancedSemanticCompactor.ts',
+        symbol: 'enhancedSemanticCompactor',
+        start: 789,
+        end: 789,
+        kind: 'export',
+        score: 0.9,
+        reasons: ['semantic context'],
+        role: 'interface',
+      };
+
+      const ranked = await rankCandidatesWithScoring(
+        [semanticMatch, exactMatch],
+        { files: SAMPLE_FILES, exports: [], imports: [], routes: [], env: [], systems: {} },
+        'checkStaleFiles embeddingSync semanticCompact',
+        'init-read-write',
+        new Map([
+          [semanticMatch.file, 0.95],
+          [exactMatch.file, 0.3],
+        ])
+      );
+
+      expect(ranked[0].symbol).toBe('checkStaleFiles');
+      expect(ranked[0].scoreBreakdown.exactSymbolBoost).toBe(1);
+    });
+
+    it('deduplicates candidates and preserves coverage for every explicit symbol', async () => {
+      const makeCandidate = (symbol: string, file: string, role: string) => ({
+        file,
+        symbol,
+        start: 10,
+        end: 20,
+        kind: 'function',
+        score: 0.8,
+        reasons: [`symbol matches: ${symbol}`],
+        role,
+      });
+      const runSkillInstall = makeCandidate(
+        'runSkillInstall',
+        'src/runtime/skill/install.ts',
+        'interface'
+      );
+
+      const ranked = await rankCandidatesWithScoring(
+        [
+          runSkillInstall,
+          { ...runSkillInstall, role: 'symbol' },
+          makeCandidate('runDoctor', 'src/runtime/doctor.ts', 'interface'),
+          makeCandidate('parseGlobalOptions', 'src/cli.ts', 'symbol'),
+        ],
+        { files: SAMPLE_FILES, exports: [], imports: [], routes: [], env: [], systems: {} },
+        'runSkillInstall runDoctor parseGlobalOptions',
+        'auto'
+      );
+
+      expect(ranked.filter(candidate => candidate.symbol === 'runSkillInstall')).toHaveLength(1);
+      expect(ranked.slice(0, 3).map(candidate => candidate.symbol)).toEqual([
+        'runSkillInstall',
+        'runDoctor',
+        'parseGlobalOptions',
+      ]);
+    });
+
+    it('does not turn ordinary conceptual words into exact symbol anchors', () => {
+      expect([
+        ...extractExplicitSymbolTokens('how does context preserve output under a token budget'),
+      ]).toEqual([]);
+      expect([
+        ...extractExplicitSymbolTokens(
+          'trace runSkillInstall LocalEmbeddingStorage USE_LOCAL_EMBEDDINGS src/cli.ts'
+        ),
+      ]).toEqual(['runskillinstall', 'localembeddingstorage', 'uselocalembeddings', 'srcclits']);
+    });
+
+    it('reserves a semantic frontier for conceptual hybrid queries', async () => {
+      const semanticDatabase = {
+        file: SAMPLE_FILES[0].absPath,
+        symbol: 'initializeDatabase',
+        start: 12,
+        end: 24,
+        kind: 'embedding',
+        score: 0.78,
+        reasons: ['semantic chunk rank: 1'],
+        role: 'semantic:code',
+        semanticRank: 1,
+      };
+      const semanticRoutes = {
+        file: SAMPLE_FILES[1].absPath,
+        symbol: 'registerRoutes',
+        start: 8,
+        end: 18,
+        kind: 'embedding',
+        score: 0.72,
+        reasons: ['semantic chunk rank: 2'],
+        role: 'semantic:code',
+        semanticRank: 2,
+      };
+      const genericLocalMaximum = {
+        file: SAMPLE_FILES[1].absPath,
+        symbol: 'context',
+        start: 30,
+        end: 35,
+        kind: 'variable',
+        score: 0.9,
+        reasons: ['keyword match: context'],
+        role: 'symbol',
+      };
+
+      const ranked = await rankCandidatesWithScoring(
+        [genericLocalMaximum, semanticDatabase, semanticRoutes],
+        { files: SAMPLE_FILES, exports: [], imports: [], routes: [], env: [], systems: {} },
+        'how does context move from request handling into storage',
+        'auto',
+        new Map([
+          [SAMPLE_FILES[0].absPath, 0.78],
+          [SAMPLE_FILES[1].absPath, 0.72],
+        ])
+      );
+
+      expect(ranked[0].kind).toBe('embedding');
+      expect(ranked.slice(0, 3).filter(candidate => candidate.kind === 'embedding')).toHaveLength(
+        2
+      );
+      expect(
+        ranked.find(candidate => candidate.symbol === 'context')?.scoreBreakdown.exactSymbolBoost
+      ).toBe(0);
+    });
+  });
+
+  describe('Semantic Chunk Candidates', () => {
+    it('preserves semantic symbols and source ranges while removing duplicate chunks', () => {
+      const candidates = gatherSemanticChunkCandidates(SAMPLE_FILES, [
+        {
+          filePath: SAMPLE_FILES[0].relPath,
+          similarity: 0.81,
+          content: 'export function initializeDatabase() {}',
+          startLine: 12,
+          endLine: 18,
+          symbols: ['initializeDatabase'],
+          type: 'code',
+          semanticRank: 1,
+        },
+        {
+          filePath: SAMPLE_FILES[0].relPath,
+          similarity: 0.8,
+          content: 'export function initializeDatabase() {}',
+          startLine: 12,
+          endLine: 18,
+          symbols: ['initializeDatabase'],
+          type: 'code',
+          semanticRank: 2,
+        },
+      ]);
+
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]).toMatchObject({
+        file: SAMPLE_FILES[0].absPath,
+        symbol: 'initializeDatabase',
+        start: 12,
+        end: 18,
+        kind: 'embedding',
+        role: 'semantic:code',
+        semanticRank: 1,
+      });
     });
   });
 
@@ -264,10 +462,34 @@ describe('Enhanced Local Context - Unit Tests', () => {
 // ===== INTEGRATION TESTS =====
 
 describe('Enhanced Local Context - Integration Tests', () => {
-  // Mock the project detection and file discovery
-  jest.mock('../../../tools/utils/pathUtils', () => ({
-    detectWorkspaceDirectory: () => FIXTURE_PROJECT_PATH,
-  }));
+  it('deduplicates targets after byte offsets resolve to the same source line', () => {
+    const targets = deduplicateJumpTargets([
+      {
+        file: 'C:\\project\\src\\doctor.ts',
+        symbol: 'runDoctor',
+        start: 52,
+        end: 78,
+        role: 'interface',
+        confidence: 0.95,
+        relevance: 0.6,
+        why: ['export name matches: runDoctor'],
+      },
+      {
+        file: 'c:\\project\\src\\doctor.ts',
+        symbol: 'runDoctor',
+        start: 52,
+        end: 78,
+        role: 'symbol',
+        confidence: 0.85,
+        relevance: 0.5,
+        why: ['symbol matches: runDoctor'],
+      },
+    ]);
+
+    expect(targets).toHaveLength(1);
+    expect(targets[0].confidence).toBe(0.95);
+    expect(targets[0].why).toEqual(['export name matches: runDoctor', 'symbol matches: runDoctor']);
+  });
 
   it('should handle database queries end-to-end', async () => {
     const request: LocalContextRequest = {
@@ -332,6 +554,38 @@ describe('Enhanced Local Context - Integration Tests', () => {
 
     expect(result.success).toBe(true);
     expect(result.metadata.bundleTokens).toBeLessThanOrEqual(500);
+  });
+
+  it('extracts snippets around line-based jump targets', async () => {
+    const longContent = Array.from({ length: 130 }, (_, index) => {
+      const line = index + 1;
+      if (line === 90) return 'export function targetFunction() {';
+      if (line === 91) return '  return "target";';
+      if (line === 92) return '}';
+      return `const filler${line} = ${line};`;
+    }).join('\n');
+
+    mockReadFileSync.mockReturnValue(longContent);
+
+    const bundle = await assembleMiniBundle(
+      [
+        {
+          file: path.join(FIXTURE_PROJECT_PATH, 'src', 'database', 'connection.ts'),
+          symbol: 'targetFunction',
+          start: 90,
+          end: 92,
+          role: 'symbol',
+          confidence: 1,
+          why: ['symbol matches: targetFunction'],
+        },
+      ],
+      SAMPLE_FILES,
+      1000
+    );
+
+    expect(bundle).toHaveLength(1);
+    expect(bundle[0].snippet).toContain('targetFunction');
+    expect(bundle[0].snippet).not.toContain('const filler1 = 1;');
   });
 
   it('demotes scripts and projection_matrix noise in path scoring', async () => {

@@ -16,14 +16,10 @@ function runCli(args, extraEnv) {
   delete env.WORKSPACE_FOLDER;
   delete env.AMBIANCE_BASE_DIR;
 
-  const result = spawnSync(
-    process.execPath,
-    ['-r', 'ts-node/register', 'src/cli.ts', ...args],
-    {
-      encoding: 'utf8',
-      env,
-    }
-  );
+  const result = spawnSync(process.execPath, ['-r', 'ts-node/register', 'src/cli.ts', ...args], {
+    encoding: 'utf8',
+    env,
+  });
 
   if (result.error) {
     const details = [
@@ -64,6 +60,23 @@ describe('CLI JSON contracts', () => {
     schemas.skillVerifySchema.parse(payload);
   });
 
+  test('skill install --dry-run --json keeps stdout machine-parseable', () => {
+    const res = runCli([
+      'skill',
+      'install',
+      '--dry-run',
+      '--target',
+      path.join(process.cwd(), 'test-storage', 'skill-install-contract'),
+      '--json',
+    ]);
+    expect(res.status).toBe(0);
+    const payload = parseJsonStdout(res.stdout);
+    expect(payload.command).toBe('skill');
+    expect(payload.success).toBe(true);
+    expect(payload.dryRun).toBe(true);
+    expect(payload.copiedFiles).toBe(0);
+  });
+
   test('skill verify --json returns success=false + exit code 1 when skills dir is missing', () => {
     const res = runCli(['skill', 'verify', '--json'], {
       AMBIANCE_SKILLS_DIR: path.join(process.cwd(), 'test-storage', `missing-skills-${Date.now()}`),
@@ -85,14 +98,7 @@ describe('CLI JSON contracts', () => {
   });
 
   test('hints --json returns valid JSON', () => {
-    const res = runCli([
-      'hints',
-      '--json',
-      '--project-path',
-      process.cwd(),
-      '--max-files',
-      '5',
-    ]);
+    const res = runCli(['hints', '--json', '--project-path', process.cwd(), '--max-files', '5']);
     expect(res.status).toBe(0);
     const payload = parseJsonStdout(res.stdout);
     schemas.hintsSchema.parse(payload);

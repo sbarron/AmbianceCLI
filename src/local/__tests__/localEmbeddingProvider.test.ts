@@ -22,7 +22,7 @@ jest.mock('../../utils/logger', () => ({
 }));
 
 // Mock the transformers pipeline to avoid actual model downloads
-jest.mock('@xenova/transformers', () => {
+jest.mock('@huggingface/transformers', () => {
   const mockPipeline = jest.fn().mockImplementation((texts: any[], options: any) => {
     // Handle null/undefined inputs
     if (!texts || !Array.isArray(texts)) {

@@ -23,13 +23,28 @@ export function setupFsMocks() {
     mkdirSync: jest.fn().mockReturnValue(undefined),
     rmSync: jest.fn().mockReturnValue(undefined),
     promises: {
-      stat: jest.fn().mockResolvedValue({
-        isFile: () => true,
-        isDirectory: () => false,
-        size: 1024,
-        mtime: new Date(),
-      } as any),
-      readFile: jest.fn().mockResolvedValue('function test() { return "test content"; }' as any),
+      mkdtemp: jest.fn().mockImplementation(async (prefix: string) => `${prefix}mock-project`),
+      stat: jest.fn().mockImplementation(async (filePath: string) => {
+        if (filePath.includes('nonexistent')) {
+          const error = new Error(`ENOENT: ${filePath}`) as NodeJS.ErrnoException;
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return {
+          isFile: () => true,
+          isDirectory: () => false,
+          size: 1024,
+          mtime: new Date(),
+        } as any;
+      }),
+      readFile: jest.fn().mockImplementation(async (filePath: string) => {
+        if (filePath.includes('nonexistent')) {
+          const error = new Error(`ENOENT: ${filePath}`) as NodeJS.ErrnoException;
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return 'function test() { return "test content"; }' as any;
+      }),
       writeFile: jest.fn().mockResolvedValue(undefined as any),
       mkdir: jest.fn().mockResolvedValue(undefined as any),
       rm: jest.fn().mockResolvedValue(undefined as any),
@@ -98,8 +113,8 @@ export function setupOpenAIMocks() {
  * Standard mock for embedding storage
  */
 export function setupEmbeddingStorageMocks() {
-  jest.mock('../../local/embeddingStorage', () => ({
-    LocalEmbeddingStorage: jest.fn().mockImplementation(() => ({
+  jest.mock('../../local/embeddingStorage', () => {
+    const LocalEmbeddingStorage = jest.fn().mockImplementation(() => ({
       initializeDatabase: jest.fn().mockResolvedValue(undefined as any),
       ensureDimensionCompatibility: jest.fn().mockResolvedValue(undefined as any),
       storeEmbedding: jest.fn().mockResolvedValue(undefined as any),
@@ -112,8 +127,10 @@ export function setupEmbeddingStorageMocks() {
       getProjectEmbeddings: jest.fn().mockResolvedValue([] as any),
       clearProjectEmbeddings: jest.fn().mockResolvedValue(undefined as any),
       close: jest.fn().mockResolvedValue(undefined as any),
-    })),
-  }));
+    }));
+    LocalEmbeddingStorage.isEnabled = jest.fn().mockReturnValue(true);
+    return { LocalEmbeddingStorage };
+  });
 }
 
 /**
@@ -160,8 +177,8 @@ export function setupStandardMocks() {
     })),
   }));
 
-  // Mock @xenova/transformers
-  jest.mock('@xenova/transformers', () => ({
+  // Mock @huggingface/transformers
+  jest.mock('@huggingface/transformers', () => ({
     pipeline: jest.fn().mockResolvedValue(() => Promise.resolve([[0.1, 0.2, 0.3]]) as any),
   }));
 }

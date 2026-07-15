@@ -9,7 +9,12 @@
  * @context: Provides intelligent ranking of code symbols based on query relevance and structural importance
  */
 
-import { CandidateSymbol, ScoringContext, DOMAIN_KEYWORDS } from './enhancedLocalContext';
+import {
+  CandidateSymbol,
+  ScoringContext,
+  DOMAIN_KEYWORDS,
+  extractExplicitSymbolTokens,
+} from './enhancedLocalContext';
 import { FileInfo } from '../../core/compactor/fileDiscovery';
 import { logger } from '../../utils/logger';
 import * as path from 'path';
@@ -23,6 +28,7 @@ export interface RankedCandidate extends CandidateSymbol {
 }
 
 export interface ScoreBreakdown {
+  exactSymbolBoost: number;
   pathPrior: number;
   keywordScore: number;
   surfaceBoost: number;
@@ -69,6 +75,7 @@ export async function rankCandidatesWithScoring(
   // Build scoring context
   const scoringContext: ScoringContext = {
     queryTokens: tokenizeQuery(query),
+    explicitSymbolTokens: extractExplicitSymbolTokens(query),
     attackPlan,
     domainKeywords: getDomainKeywordsForPlan(attackPlan),
     projectIndices: projectContext,
@@ -82,7 +89,12 @@ export async function rankCandidatesWithScoring(
   const hasEmbeddings = !!embeddingScores && embeddingScores.size > 0;
 
   for (const candidate of candidates) {
-    const scoreBreakdown = calculateScoreBreakdown(candidate, scoringContext, callGraph, embeddingScores);
+    const scoreBreakdown = calculateScoreBreakdown(
+      candidate,
+      scoringContext,
+      callGraph,
+      embeddingScores
+    );
     const finalScore = calculateFinalScore(scoreBreakdown, hasEmbeddings);
 
     rankedCandidates.push({
@@ -93,28 +105,53 @@ export async function rankCandidatesWithScoring(
     });
   }
 
-  // Sort by final score (descending)
-  rankedCandidates.sort((a, b) => b.finalScore - a.finalScore);
+  // Sort exact symbol hits before broader semantic/file-level matches, then by final score.
+  rankedCandidates.sort((a, b) => {
+    const exactDelta = b.scoreBreakdown.exactSymbolBoost - a.scoreBreakdown.exactSymbolBoost;
+    if (Math.abs(exactDelta) > 0.0001) {
+      return exactDelta;
+    }
+    return b.finalScore - a.finalScore;
+  });
 
-  // Assign rankings
-  rankedCandidates.forEach((candidate, index) => {
+  // Collapse the same symbol surfaced by multiple candidate generators before
+  // it can consume the result budget more than once.
+  const deduplicated = deduplicateRankedCandidates(rankedCandidates);
+
+  // Add diversity, then reserve coverage for every explicit symbol named in
+  // the query. This prevents one prolific symbol/file from crowding out a
+  // second exact symbol that the agent explicitly requested.
+  const diversified = applyDiversityFilter(deduplicated);
+  const hybridDiversified = hasEmbeddings
+    ? applyHybridFrontier(deduplicated, diversified, scoringContext.explicitSymbolTokens.size === 0)
+    : diversified;
+  const conceptPrioritized = prioritizeRareConceptCoverage(
+    deduplicated,
+    hybridDiversified,
+    scoringContext.queryTokens,
+    scoringContext.explicitSymbolTokens
+  );
+  const coveragePrioritized = prioritizeExplicitSymbolCoverage(
+    deduplicated,
+    conceptPrioritized,
+    scoringContext.explicitSymbolTokens
+  ).slice(0, 20);
+
+  coveragePrioritized.forEach((candidate, index) => {
     candidate.ranking = index + 1;
   });
 
-  // Add diversity - ensure we don't have too many from the same file
-  const diversified = applyDiversityFilter(rankedCandidates);
-
   logger.info('✅ Candidate ranking completed', {
     totalCandidates: candidates.length,
-    rankedCandidates: diversified.length,
-    topScore: diversified[0]?.finalScore || 0,
+    rankedCandidates: coveragePrioritized.length,
+    topScore: coveragePrioritized[0]?.finalScore || 0,
     averageScore:
-      diversified.length > 0
-        ? diversified.reduce((sum, c) => sum + c.finalScore, 0) / diversified.length
+      coveragePrioritized.length > 0
+        ? coveragePrioritized.reduce((sum, c) => sum + c.finalScore, 0) / coveragePrioritized.length
         : 0,
   });
 
-  return diversified;
+  return coveragePrioritized;
 }
 
 // ===== SCORING CALCULATIONS =====
@@ -129,30 +166,34 @@ function calculateScoreBreakdown(
   embeddingScores?: Map<string, number>
 ): ScoreBreakdown {
   // 1. Path Prior - boost based on file path relevance
+  const exactSymbolBoost = calculateExactSymbolBoost(candidate, context);
+
+  // 2. Path Prior - boost based on file path relevance
   const pathPrior = calculatePathPrior(candidate, context);
 
-  // 2. Keyword Score - match against query tokens
+  // 3. Keyword Score - match against query tokens
   const keywordScore = calculateKeywordScore(candidate, context);
 
-  // 3. Surface Boost - prioritize exports, public symbols
+  // 4. Surface Boost - prioritize exports, public symbols
   const surfaceBoost = calculateSurfaceBoost(candidate, context.projectIndices);
 
-  // 4. Degree Boost - call graph connectivity
+  // 5. Degree Boost - call graph connectivity
   const degreeBoost = calculateDegreeBoost(candidate, callGraph);
 
-  // 5. Recency Boost - git recency (if available)
+  // 6. Recency Boost - git recency (if available)
   const recencyBoost = calculateRecencyBoost(candidate, context.projectIndices);
 
-  // 6. Context Boost - surrounding context relevance
+  // 7. Context Boost - surrounding context relevance
   const contextBoost = calculateContextBoost(candidate, context);
 
-  // 7. Domain Boost - domain-specific relevance
+  // 8. Domain Boost - domain-specific relevance
   const domainBoost = calculateDomainBoost(candidate, context);
 
-  // 8. Embedding Score - semantic similarity from vector embeddings
+  // 9. Embedding Score - semantic similarity from vector embeddings
   const embeddingScore = calculateEmbeddingScore(candidate, embeddingScores);
 
   return {
+    exactSymbolBoost,
     pathPrior,
     keywordScore,
     surfaceBoost,
@@ -172,27 +213,30 @@ function calculateScoreBreakdown(
 function calculateFinalScore(breakdown: ScoreBreakdown, hasEmbeddings: boolean): number {
   const weights = hasEmbeddings
     ? {
-        pathPrior: 0.10,
-        keywordScore: 0.15,
-        surfaceBoost: 0.15,
+        exactSymbolBoost: 0.25,
+        pathPrior: 0.1,
+        keywordScore: 0.12,
+        surfaceBoost: 0.12,
         degreeBoost: 0.08,
         recencyBoost: 0.04,
-        contextBoost: 0.10,
+        contextBoost: 0.1,
         domainBoost: 0.08,
-        embeddingScore: 0.30,
+        embeddingScore: 0.3,
       }
     : {
+        exactSymbolBoost: 0.3,
         pathPrior: 0.15,
-        keywordScore: 0.25,
-        surfaceBoost: 0.20,
-        degreeBoost: 0.10,
+        keywordScore: 0.2,
+        surfaceBoost: 0.15,
+        degreeBoost: 0.1,
         recencyBoost: 0.05,
         contextBoost: 0.15,
-        domainBoost: 0.10,
+        domainBoost: 0.1,
         embeddingScore: 0.0,
       };
 
   return (
+    breakdown.exactSymbolBoost * weights.exactSymbolBoost +
     breakdown.pathPrior * weights.pathPrior +
     breakdown.keywordScore * weights.keywordScore +
     breakdown.surfaceBoost * weights.surfaceBoost +
@@ -205,6 +249,45 @@ function calculateFinalScore(breakdown: ScoreBreakdown, hasEmbeddings: boolean):
 }
 
 // ===== INDIVIDUAL SCORING FUNCTIONS =====
+
+/**
+ * Strongly prefer explicit symbol matches before semantic/file-level ranking.
+ * This keeps symbol-anchored agent queries surgical without dropping broader
+ * semantic candidates from the result set.
+ */
+function calculateExactSymbolBoost(candidate: CandidateSymbol, context: ScoringContext): number {
+  const normalizedSymbol = normalizeIdentifier(candidate.symbol);
+  const normalizedFileStem = normalizeIdentifier(
+    path.basename(candidate.file).replace(/\.[^.]+$/, '')
+  );
+  const normalizedSymbolParts = getIdentifierParts(candidate.symbol).map(normalizeIdentifier);
+
+  if (!normalizedSymbol) {
+    return 0;
+  }
+
+  const candidates = context.explicitSymbolTokens;
+
+  for (const token of candidates) {
+    if (normalizedSymbol === token) {
+      return 1.0;
+    }
+  }
+
+  for (const token of candidates) {
+    if (normalizedSymbolParts.some(part => part === token)) {
+      return 0.9;
+    }
+  }
+
+  for (const token of candidates) {
+    if (normalizedFileStem === token) {
+      return 0.7;
+    }
+  }
+
+  return 0;
+}
 
 /**
  * Score based on file path relevance
@@ -548,7 +631,10 @@ function calculateEmbeddingScore(
     for (const [filePath, score] of embeddingScores) {
       const normalizedKey = filePath.replace(/\\/g, '/');
       const normalizedCandidate = candidate.file.replace(/\\/g, '/');
-      if (normalizedKey.endsWith(normalizedCandidate) || normalizedCandidate.endsWith(normalizedKey)) {
+      if (
+        normalizedKey.endsWith(normalizedCandidate) ||
+        normalizedCandidate.endsWith(normalizedKey)
+      ) {
         similarity = score;
         break;
       }
@@ -565,6 +651,227 @@ function calculateEmbeddingScore(
 }
 
 // ===== UTILITY FUNCTIONS =====
+
+function candidateIdentity(candidate: CandidateSymbol): string {
+  return [
+    path.normalize(candidate.file).toLowerCase(),
+    normalizeIdentifier(candidate.symbol),
+    candidate.start || 0,
+    candidate.end || candidate.start || 0,
+  ].join(':');
+}
+
+function deduplicateRankedCandidates(candidates: RankedCandidate[]): RankedCandidate[] {
+  const deduplicated: RankedCandidate[] = [];
+  const indexByIdentity = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    const identity = candidateIdentity(candidate);
+    const existingIndex = indexByIdentity.get(identity);
+    if (existingIndex === undefined) {
+      indexByIdentity.set(identity, deduplicated.length);
+      deduplicated.push(candidate);
+      continue;
+    }
+
+    const existing = deduplicated[existingIndex];
+    existing.reasons = [...new Set([...(existing.reasons || []), ...(candidate.reasons || [])])];
+    existing.score = Math.max(existing.score || 0, candidate.score || 0);
+  }
+
+  return deduplicated;
+}
+
+function prioritizeExplicitSymbolCoverage(
+  allCandidates: RankedCandidate[],
+  diversifiedCandidates: RankedCandidate[],
+  explicitTokens: Set<string>
+): RankedCandidate[] {
+  const selected: RankedCandidate[] = [];
+  const selectedIdentities = new Set<string>();
+
+  for (const token of explicitTokens) {
+    const match = allCandidates.find(
+      candidate =>
+        candidate.scoreBreakdown.exactSymbolBoost > 0 &&
+        normalizeIdentifier(candidate.symbol) === token
+    );
+    if (!match) continue;
+
+    const identity = candidateIdentity(match);
+    if (!selectedIdentities.has(identity)) {
+      selected.push(match);
+      selectedIdentities.add(identity);
+    }
+  }
+
+  for (const candidate of diversifiedCandidates) {
+    const identity = candidateIdentity(candidate);
+    if (!selectedIdentities.has(identity)) {
+      selected.push(candidate);
+      selectedIdentities.add(identity);
+    }
+  }
+
+  return selected;
+}
+
+function prioritizeRareConceptCoverage(
+  allCandidates: RankedCandidate[],
+  blendedCandidates: RankedCandidate[],
+  queryTokens: string[],
+  explicitTokens: Set<string>
+): RankedCandidate[] {
+  const stopwords = new Set([
+    'about',
+    'after',
+    'before',
+    'budget',
+    'context',
+    'does',
+    'from',
+    'have',
+    'into',
+    'missing',
+    'output',
+    'preserve',
+    'repeated',
+    'symbols',
+    'token',
+    'under',
+    'what',
+    'when',
+    'where',
+    'which',
+    'while',
+    'with',
+  ]);
+  const tokens = [...new Set(queryTokens.map(normalizeIdentifier))].filter(
+    token => token.length >= 5 && !stopwords.has(token) && !explicitTokens.has(token)
+  );
+  const tokenMatches = tokens
+    .map(token => ({
+      token,
+      matches: allCandidates.filter(candidate => {
+        const symbol = normalizeIdentifier(candidate.symbol);
+        const fileStem = normalizeIdentifier(path.basename(candidate.file).replace(/\.[^.]+$/, ''));
+        return symbol.includes(token) || fileStem.includes(token);
+      }),
+    }))
+    .filter(item => item.matches.length > 0 && item.matches.length <= 30)
+    .sort((a, b) => a.matches.length - b.matches.length || b.token.length - a.token.length)
+    .slice(0, 4);
+  const prioritized: RankedCandidate[] = [];
+  const seen = new Set<string>();
+
+  const push = (candidate: RankedCandidate | undefined): void => {
+    if (!candidate) return;
+    const identity = candidateIdentity(candidate);
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    prioritized.push(candidate);
+  };
+
+  for (const item of tokenMatches) {
+    push(item.matches[0]);
+  }
+  for (const candidate of blendedCandidates) {
+    push(candidate);
+  }
+
+  return prioritized;
+}
+
+/**
+ * Reserve a cross-module semantic frontier before filling the result set with
+ * structurally ranked candidates. This keeps conceptual queries from stopping
+ * at the first lexically plausible subsystem while preserving exact-symbol
+ * precision when the query already contains code-shaped anchors.
+ */
+function applyHybridFrontier(
+  allCandidates: RankedCandidate[],
+  diversifiedCandidates: RankedCandidate[],
+  conceptualQuery: boolean
+): RankedCandidate[] {
+  const semanticQuota = conceptualQuery ? 8 : 4;
+  const semanticCandidates = allCandidates
+    .filter(candidate => candidate.kind === 'embedding')
+    .sort(
+      (a, b) =>
+        (a.semanticRank ?? Number.MAX_SAFE_INTEGER) - (b.semanticRank ?? Number.MAX_SAFE_INTEGER) ||
+        b.finalScore - a.finalScore
+    );
+  const structuralCandidates = diversifiedCandidates.filter(
+    candidate => candidate.kind !== 'embedding'
+  );
+  const semanticFrontier = selectSemanticFrontier(semanticCandidates, semanticQuota);
+  const blended: RankedCandidate[] = [];
+  const seen = new Set<string>();
+
+  const push = (candidate: RankedCandidate | undefined): void => {
+    if (!candidate) return;
+    const identity = candidateIdentity(candidate);
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    blended.push(candidate);
+  };
+
+  const width = Math.max(semanticFrontier.length, structuralCandidates.length);
+  for (let index = 0; index < width && blended.length < 20; index++) {
+    if (conceptualQuery) {
+      push(semanticFrontier[index]);
+      push(structuralCandidates[index]);
+    } else {
+      push(structuralCandidates[index]);
+      push(semanticFrontier[index]);
+    }
+  }
+
+  for (const candidate of diversifiedCandidates) {
+    if (blended.length >= 20) break;
+    push(candidate);
+  }
+
+  return blended;
+}
+
+function selectSemanticFrontier(candidates: RankedCandidate[], quota: number): RankedCandidate[] {
+  const sourcePattern = /\.(?:[cm]?[jt]sx?|py|go|rs|java|cs|rb|php|swift|kt)$/i;
+  const sourceCandidates = candidates.filter(candidate => sourcePattern.test(candidate.file));
+  const supportingCandidates = candidates.filter(candidate => !sourcePattern.test(candidate.file));
+  const selected: RankedCandidate[] = [];
+  const seenFiles = new Set<string>();
+  const seenModules = new Set<string>();
+
+  const addPass = (pool: RankedCandidate[], requireNewModule: boolean, limit: number): void => {
+    for (const candidate of pool) {
+      if (selected.length >= limit) return;
+      const file = path.normalize(candidate.file).toLowerCase();
+      const module = semanticModuleKey(candidate.file);
+      if (seenFiles.has(file)) continue;
+      if (requireNewModule && seenModules.has(module)) continue;
+      selected.push(candidate);
+      seenFiles.add(file);
+      seenModules.add(module);
+    }
+  };
+
+  addPass(sourceCandidates, true, Math.max(1, quota - 1));
+  addPass(sourceCandidates, false, Math.max(1, quota - 1));
+  addPass(supportingCandidates, true, quota);
+  addPass(supportingCandidates, false, quota);
+
+  return selected.slice(0, quota);
+}
+
+function semanticModuleKey(filePath: string): string {
+  const parts = filePath.replace(/\\/g, '/').toLowerCase().split('/').filter(Boolean);
+  const srcIndex = parts.lastIndexOf('src');
+  if (srcIndex >= 0) {
+    return parts.slice(srcIndex, srcIndex + 2).join('/');
+  }
+  return parts.slice(-3, -1).join('/') || parts.slice(0, 2).join('/');
+}
 
 /**
  * Build call graph from candidates
@@ -635,7 +942,7 @@ function getDomainKeywordsForPlan(plan: string): string[] {
     case 'error-driven':
       return ['error', 'exception', 'fail', 'catch', 'throw'];
     default:
-      return Object.values(DOMAIN_KEYWORDS).flat();
+      return [];
   }
 }
 
@@ -647,24 +954,63 @@ function getDomainKeywordsForPlan(plan: string): string[] {
  */
 function tokenizeQuery(query: string): string[] {
   const STOPWORDS = new Set([
-    'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were',
-    'be', 'been', 'being', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
-    'by', 'from', 'it', 'its', 'this', 'that', 'my', 'your',
+    'a',
+    'an',
+    'the',
+    'and',
+    'or',
+    'but',
+    'is',
+    'are',
+    'was',
+    'were',
+    'be',
+    'been',
+    'being',
+    'in',
+    'on',
+    'at',
+    'to',
+    'for',
+    'of',
+    'with',
+    'by',
+    'from',
+    'it',
+    'its',
+    'this',
+    'that',
+    'my',
+    'your',
   ]);
 
   // Keep question words as weak signals rather than removing entirely
-  const WEAK_WORDS = new Set(['how', 'does', 'can', 'will', 'what', 'where', 'when', 'why', 'which']);
+  const WEAK_WORDS = new Set([
+    'how',
+    'does',
+    'can',
+    'will',
+    'what',
+    'where',
+    'when',
+    'why',
+    'which',
+  ]);
 
   // Split into raw words
   const rawWords = query
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[\s\-_\.\,\?\!]+/)
     .filter(w => w.length > 1);
 
+  const rawSymbolTokens = query
+    .split(/[\s,\?\!]+/)
+    .map(token => token.trim())
+    .filter(token => token.length > 1);
+
   // Meaningful words (not stopwords, length > 2)
-  const meaningful = rawWords.filter(
-    w => w.length > 2 && !STOPWORDS.has(w) && !WEAK_WORDS.has(w)
-  );
+  const meaningful = rawWords.filter(w => w.length > 2 && !STOPWORDS.has(w) && !WEAK_WORDS.has(w));
 
   // Build bigrams from consecutive meaningful words for phrase matching
   // e.g., "context command" from "how does the context command build its response"
@@ -674,8 +1020,8 @@ function tokenizeQuery(query: string): string[] {
     const b = rawWords[i + 1];
     // Only make bigrams from non-stopword pairs
     if (a.length > 2 && b.length > 2 && !STOPWORDS.has(a) && !STOPWORDS.has(b)) {
-      bigrams.push(`${a}${b}`);       // concatenated: "contextcommand"
-      bigrams.push(`${a}_${b}`);      // underscore: "context_command"
+      bigrams.push(`${a}${b}`); // concatenated: "contextcommand"
+      bigrams.push(`${a}_${b}`); // underscore: "context_command"
       bigrams.push(`${a}${b[0].toUpperCase()}${b.slice(1)}`); // camelCase: "contextCommand"
     }
   }
@@ -685,13 +1031,34 @@ function tokenizeQuery(query: string): string[] {
   const camelTokens: string[] = [];
   for (const word of meaningful) {
     // If the word itself looks like camelCase, split it
-    const parts = word.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(' ');
+    const parts = word
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(' ');
     if (parts.length > 1) {
       camelTokens.push(...parts.filter(p => p.length > 2));
     }
   }
 
-  return [...new Set([...meaningful, ...bigrams, ...camelTokens])];
+  return [...new Set([...meaningful, ...bigrams, ...camelTokens, ...rawSymbolTokens])];
+}
+
+function normalizeIdentifier(value: string): string {
+  return value
+    .replace(/^import from\s+/i, '')
+    .replace(/^new\s+/i, '')
+    .replace(/^[A-Z]+\s+/, '')
+    .replace(/[^A-Za-z0-9_$]+/g, '')
+    .toLowerCase();
+}
+
+function getIdentifierParts(value: string): string[] {
+  return value
+    .replace(/^import from\s+/i, '')
+    .replace(/^new\s+/i, '')
+    .replace(/^[A-Z]+\s+/, '')
+    .split(/[^A-Za-z0-9_$]+/)
+    .filter(Boolean);
 }
 
 /**

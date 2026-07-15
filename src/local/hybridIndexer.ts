@@ -412,6 +412,7 @@ export class HybridIndexer {
             '**/_sunset-*/**',
             '**/_SUNSET-*/**',
           ],
+          suppressErrors: true,
         });
         files.push(...matches);
       } catch (error) {

@@ -88,6 +88,9 @@ describe('LocalEmbeddingGenerator', () => {
   beforeEach(() => {
     // Reset all mocks
     jest.clearAllMocks();
+    // Provider failure state is process-wide in production and must not leak between tests.
+    // @ts-ignore - accessing private static for test isolation
+    LocalEmbeddingGenerator.providerFailures.clear();
 
     // Import the mocked modules
     const { LocalEmbeddingStorage } = require('../embeddingStorage');
@@ -320,23 +323,24 @@ describe('LocalEmbeddingGenerator', () => {
       // @ts-ignore - accessing private static for testing
       LocalEmbeddingGenerator.providerFailures.clear();
 
-      // Set up to use OpenAI provider and disable local embeddings
+      // Set up both providers to fail so the project-level progress captures the error.
       process.env.USE_OPENAI_EMBEDDINGS = 'true';
       process.env.OPENAI_API_KEY = 'test-key';
-      process.env.USE_LOCAL_EMBEDDINGS = 'false'; // Disable local fallback
       mockOpenAIService.isReady.mockReturnValue(true);
-      mockOpenAIService.getClient.mockReturnValue({}); // Mock OpenAI client as available
-
-      // Create generator with OpenAI enabled
-      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
-
-      // Mock the OpenAI client to throw an error
       const mockOpenAIClient = {
         embeddings: {
           create: jest.fn().mockRejectedValue(new Error('API Error')),
         },
       };
       mockOpenAIService.getClient.mockReturnValue(mockOpenAIClient);
+      const failingLocalProvider = {
+        ...mockLocalProvider,
+        generateEmbeddings: jest.fn().mockRejectedValue(new Error('Local provider failed')),
+      };
+      (getDefaultLocalProvider as jest.Mock).mockReturnValue(failingLocalProvider);
+
+      // Create generator after the client mock is configured; the constructor captures it.
+      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
 
       const result = await openaiGenerator.generateProjectEmbeddings(
         mockProjectId,
@@ -351,9 +355,9 @@ describe('LocalEmbeddingGenerator', () => {
       // Clean up
       delete process.env.USE_OPENAI_EMBEDDINGS;
       delete process.env.OPENAI_API_KEY;
-      delete process.env.USE_LOCAL_EMBEDDINGS;
       mockOpenAIService.isReady.mockReset();
       mockOpenAIService.getClient.mockReset();
+      (getDefaultLocalProvider as jest.Mock).mockReturnValue(mockLocalProvider);
     });
 
     test('should handle chunking options', async () => {
@@ -431,23 +435,24 @@ describe('LocalEmbeddingGenerator', () => {
       // @ts-ignore - accessing private static for testing
       LocalEmbeddingGenerator.providerFailures.clear();
 
-      // Set up to use OpenAI provider and disable local embeddings
+      // Set up both providers to fail.
       process.env.USE_OPENAI_EMBEDDINGS = 'true';
       process.env.OPENAI_API_KEY = 'test-key';
-      process.env.USE_LOCAL_EMBEDDINGS = 'false'; // Disable local fallback
       mockOpenAIService.isReady.mockReturnValue(true);
-      mockOpenAIService.getClient.mockReturnValue({}); // Mock OpenAI client as available
-
-      // Create generator with OpenAI enabled and local disabled
-      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
-
-      // Mock the OpenAI client to throw an error
       const mockOpenAIClient = {
         embeddings: {
           create: jest.fn().mockRejectedValue(new Error('API Error')),
         },
       };
       mockOpenAIService.getClient.mockReturnValue(mockOpenAIClient);
+      const failingLocalProvider = {
+        ...mockLocalProvider,
+        generateEmbeddings: jest.fn().mockRejectedValue(new Error('Local provider failed')),
+      };
+      (getDefaultLocalProvider as jest.Mock).mockReturnValue(failingLocalProvider);
+
+      // Create generator after the client mock is configured; the constructor captures it.
+      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
 
       await expect(openaiGenerator.generateQueryEmbedding('test')).rejects.toThrow(
         'Embedding generation failed with all providers'
@@ -456,9 +461,9 @@ describe('LocalEmbeddingGenerator', () => {
       // Clean up
       delete process.env.USE_OPENAI_EMBEDDINGS;
       delete process.env.OPENAI_API_KEY;
-      delete process.env.USE_LOCAL_EMBEDDINGS;
       mockOpenAIService.isReady.mockReset();
       mockOpenAIService.getClient.mockReset();
+      (getDefaultLocalProvider as jest.Mock).mockReturnValue(mockLocalProvider);
     });
 
     test('should use project-specific embedding generation when projectId provided', async () => {
@@ -543,15 +548,6 @@ describe('LocalEmbeddingGenerator', () => {
       process.env.USE_OPENAI_EMBEDDINGS = 'true';
       process.env.OPENAI_API_KEY = 'test-key';
       mockOpenAIService.isReady.mockReturnValue(true);
-      mockOpenAIService.getClient.mockReturnValue({}); // Mock OpenAI client as available
-
-      // Create generator with OpenAI enabled
-      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
-
-      // Mock getDefaultLocalProvider to return the failing provider for this generator
-      (getDefaultLocalProvider as jest.Mock).mockReturnValue(failingLocalProvider);
-
-      // Mock the OpenAI client to return successful results
       const mockOpenAIClient = {
         embeddings: {
           create: jest.fn().mockResolvedValue({
@@ -560,6 +556,10 @@ describe('LocalEmbeddingGenerator', () => {
         },
       };
       mockOpenAIService.getClient.mockReturnValue(mockOpenAIClient);
+
+      // Configure both providers before construction; the OpenAI client is captured eagerly.
+      (getDefaultLocalProvider as jest.Mock).mockReturnValue(failingLocalProvider);
+      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
 
       const result = await openaiGenerator.generateQueryEmbedding('test');
 

@@ -736,7 +736,7 @@ export class ComplexProcessor {
 
   // Create JavaScript files to ensure JS discovery test passes
   await fs.writeFile(
-    path.join(srcDir, 'index.js'),
+    path.join(srcDir, 'worker.js'),
     `
 const { utilityFunction } = require('./utils');
 

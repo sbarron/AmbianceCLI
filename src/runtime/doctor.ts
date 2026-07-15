@@ -51,7 +51,7 @@ async function probeEsm(moduleName: string): Promise<{ available: boolean; error
 
 export async function runDoctor(args: { detectedProjectPath: string }): Promise<DoctorReport> {
   const treeSitter = probeRequire('tree-sitter');
-  const transformers = await probeEsm('@xenova/transformers');
+  const transformers = await probeEsm('@huggingface/transformers');
   const sqliteBindings = probeRequire('better-sqlite3');
 
   return {

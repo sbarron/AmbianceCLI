@@ -1,108 +1,180 @@
 ---
 name: ambiance
-description: CLI-first code context and analysis for agent workflows. Use when an agent needs deterministic local project understanding, semantic context retrieval, AST pattern search, debug-context extraction from logs, embeddings lifecycle management, context-pack workflows, or MCP-to-CLI migration mapping via the `ambiance` command.
+description: Build verified, token-budgeted project evidence for coding agents using adaptive semantic frontier discovery plus deterministic symbol and AST retrieval through the `ambiance` CLI.
 ---
 
 # Ambiance Skill
 
-Use `ambiance --json` commands as the primary interface for automation.
+Use Ambiance as a project-intelligence and evidence-retrieval layer. The host agent owns the investigation and final reasoning; Ambiance discovers relevant neighborhoods, ranks grounded locations, and compacts the evidence.
 
-## STOP — Read Before Using
+Use `ambiance ... --json` for automation. Treat a command as successful only when its exit code is `0` and the JSON `success` field is not `false`.
 
-Before running any ambiance command, internalize these rules. Skipping this section leads to noisy results, wasted queries, and premature tool-switching.
+## Operating Principles
 
-### 1. Write symbol-anchored queries, not keyword dumps
-The single biggest factor in result quality is query specificity.
+1. **Choose the retrieval path from what is known.** Exact identifiers use deterministic search. Conceptual or system-level questions use the semantic index to discover the vocabulary first.
+2. **Semantic breadth, deterministic precision.** Preserve semantic chunks as frontier evidence, then drill into their symbols, callers, imports, configuration, persistence, tests, and failure handling.
+3. **Do not stop at the first plausible subsystem.** Check at least one competing module or relationship before declaring the evidence complete.
+4. **Keep the index trustworthy.** Embedding-assisted context performs incremental freshness checks, including tracked files that have zero chunks after an interrupted write.
+5. **Agentic search is bounded escalation.** Do not start with multiple search agents. Use at most one focused scout only after the hybrid workflow leaves a named evidence gap.
+6. **Provenance beats prose.** `answerDraft` is deterministic routing metadata, not a final answer. Base claims on `jumpTargets`, semantic chunk ranges, relationships, and exact follow-up reads.
 
-- **Strong** (specific symbols): `"generateThumbnailForKey presignR2GetUrl cf.image uploadR2Object"` → 1 file, 4 relevant symbols, zero noise
-- **Weak** (generic keywords): `"image upload thumbnail generation R2 storage cf.image transform resize"` → 10 files, 20 symbols, 40% noise
+## Adaptive Hybrid Workflow
 
-Always include concrete function names, class names, or identifiers you already know. If you don't know any yet, use `ambiance hints` or `ambiance summary` first to discover them, then re-query with the symbols you find.
+### 1. Classify the request
 
-### 2. Pick the right format before running
-- **Default `context`** (no `--format` flag): Returns jump targets, code snippets, answer analysis, evidence, and next actions. This is the `enhanced` format and the best starting point for most queries.
-- **`--format index`**: Same analysis but omits code snippets — returns only jump target locations. Use when you need compact file:line navigation without the code bulk.
+Use the **known-symbol path** when the request already contains code-shaped identifiers such as `runSkillInstall`, `LocalEmbeddingStorage`, `USE_LOCAL_EMBEDDINGS`, or `src/cli.ts`.
 
-**Default to `context` (no format flag).** Only switch to `--format index` when you specifically need compact jump-target-only output.
+Use the **conceptual path** when the request describes behavior but the implementation vocabulary is unknown, for example “how does shutdown prevent background timers from keeping the process alive?”
 
-### 3. Complete the ambiance workflow — do NOT bail out early
-Agents have a strong bias toward built-in tools (Read, Grep, Glob). Resist this:
-- Do NOT get file paths from step 2 then abandon ambiance to use Read/Grep directly
-- Do NOT run parallel manual searches alongside ambiance — complete the ambiance workflow first
-- Use `ambiance grep` for structural narrowing and `ambiance summary` for file-level detail before falling back to raw text search
+### 2A. Known-symbol path: deterministic first
 
-### 4. Understand what ambiance returns
-The `answerDraft` field in results is **extracted metadata** (symbols, relationships, signatures), not generated summary text. Do not evaluate it as a prose summary or dismiss it as "hallucinated." It is deterministic AST/embedding output.
+```text
+ambiance context "<symbol1 symbol2 frameworkIdentifier>" --format index --json --project-path <absolute-path> --max-tokens 1200 --no-embeddings
+```
 
-## Core Workflow
+This is the lowest-token path. Exact code-shaped identifiers receive reserved coverage, while repeated resolved locations are removed.
 
-1. Start with semantic understanding (default format, symbol-anchored query):
-   - `ambiance context "<symbol-anchored query>" --json --project-path <path> --embeddings`
-   - Embeddings are automatically created if missing and refreshed if stale before the query runs. No manual setup needed.
-2. If you need compact jump targets without code snippets, follow up with index format:
-   - `ambiance context "<query>" --format index --json --project-path <path> --embeddings`
-4. Narrow and confirm structure with AST search:
-   - `ambiance grep "<ast pattern>" --json --project-path <path> --file-pattern "<glob>"`
-5. Get file-level API/symbol extraction:
-   - `ambiance summary <file> --json`
-6. Fill exact details with lexical search only after ambiance steps are exhausted:
-   - `rg -n "<term>" <path>` (fallback `grep -R`)
-7. Use workflow-appropriate commands:
-   - `hints`: `ambiance hints --json --project-path <path>` for structure discovery
-   - `debug`: `ambiance debug "<log text>" --json --project-path <path>` for log-driven root-cause context
-   - `frontend`: `ambiance frontend --json --project-path <path>` for UI architecture analysis
-   - `packs`: `ambiance packs list --json` for reusable context bundles
-8. Run `ambiance skill verify --json` when validating shipped skill artifacts.
+### 2B. Conceptual path: semantic frontier first
 
-## Format Selection Policy
+Check the index, then retrieve a bounded hybrid frontier:
 
-| Goal | Format | Why |
-|------|--------|-----|
-| Understand code with jump targets + snippets | `context` (default = enhanced) | Full analysis: targets, code snippets, evidence, next actions |
-| Compact navigation to specific locations | `context --format index` | Same analysis but omits code snippets — just file:line targets |
-| Broad sweep for all references to a concept | `context --format index` | Casts a wider net, compact output |
-| Deep understanding of a single file's API | `summary <file>` | Complete symbol extraction for one file |
+```text
+ambiance embeddings status --json --project-path <absolute-path>
+ambiance context "<behavior or system question>" --format index --json --project-path <absolute-path> --max-tokens 1600 --max-similar-chunks 12 --embeddings
+```
 
-## Query Strategy
+`--embeddings` checks freshness and incrementally repairs new, stale, deleted, and zero-chunk tracked files before retrieval. Do not force a full rebuild unless compatibility is broken or incremental repair reports errors.
 
-- Use **symbol-anchored** queries: include concrete function/class/variable names you know or discovered from prior steps.
-- Include library-specific identifiers (e.g., `Hono`, `D1Database`, `R2Bucket`) to anchor results.
-- Avoid conversational phrasing — ambiance uses semantic similarity, not Q&A.
+For conceptual queries, Ambiance interleaves real semantic chunks with structural candidates across modules. Read `metadata.retrievalStrategy`, `semanticCandidates`, and `moduleCoverage` before deciding whether the frontier is broad enough.
 
-**Examples:**
-- Strong: `"presignR2GetUrl signQuery S3Client GetObjectCommand"` — specific symbols, tight results
-- Strong: `"adminRoutes registerAdminRoutes Hono app.route"` — anchored to known identifiers
-- Weak: `"how does the admin routing work"` — conversational, vague
-- Weak: `"image upload thumbnail generation R2 storage cf.image transform resize"` — too many generic keywords, produces noisy results
+### 3. Convert the frontier into deterministic anchors
 
-## Search Routing Policy
+From the semantic chunk symbols and nearby structural targets, form one compact follow-up query:
 
-1. Use `context` (default enhanced format) first for semantic understanding with symbol-anchored queries.
-2. Use `context --format index` second when you need compact jump targets without code snippets.
-3. Use `ambiance grep` third when AST structure/captures are required.
-4. Use native text search last (`rg -n "<term>" <path>`, fallback `grep -R`) to fill exact details.
-5. On large repos, apply scope early with `--file-pattern` and `--exclude`/`--exclude-patterns`.
+```text
+ambiance context "<discoveredSymbol1 discoveredSymbol2 relatedConfig>" --format index --json --project-path <absolute-path> --max-tokens 1200 --no-embeddings
+```
 
-## Index Hygiene
+Then inspect only selected evidence:
 
-1. Embeddings are automatically created (if missing) and refreshed (if stale) before each context query when `--embeddings` flag or `USE_LOCAL_EMBEDDINGS=true` env var is set.
-2. Use `embeddings status` for troubleshooting, maintenance, or explicit audits.
-3. Use full rebuild (`embeddings create --force true`) only for migration or broken indexes.
+```text
+ambiance summary <file> --json --project-path <absolute-path>
+ambiance grep "<ast pattern>" --json --project-path <absolute-path> --file-pattern "<glob>"
+```
 
-## Expected Result
+Use the host's exact file reads for returned files and line ranges. The semantic pass discovers where to look; the deterministic pass verifies how the behavior is wired.
 
-- Commands run non-interactively and return machine-readable JSON.
-- Treat a command as successful only when process exit code is `0` and JSON `success` is not `false`.
-- On failures, use the returned `suggestion`/error message and follow `skills/ambiance/TROUBLESHOOTING.md`.
-- For command details and option discovery, use `ambiance <command> --help` and `ambiance skill recipe <name> --json`.
+### 4. Run the local-maximum check
+
+Before stopping, require:
+
+- at least one grounded definition or entry point;
+- caller, registration, or import wiring when behavior crosses files;
+- configuration and persistence/external effects when applicable;
+- tests and failure behavior;
+- one result outside the leading file or module, or an explicit negative check showing no competing implementation exists.
+
+If `moduleCoverage` is `1` for a system-level question, refine the semantic query or inspect imports before concluding. Do not expand merely to collect more copies of the same evidence.
+
+## Bounded Escalation
+
+### Tier 1: One hybrid frontier and one deterministic drilldown
+
+For conceptual work, the normal budget is one embedding-assisted frontier plus one symbol-anchored verification query. For known-symbol work, start with the deterministic query and add a semantic pass only if a named evidence role is missing.
+
+### Tier 2: One disconfirming query
+
+If all evidence clusters in one subsystem, run one query aimed at the missing role or competing implementation. Examples: persistence outside the service, alternate registration, background worker, compatibility layer, or failure cleanup.
+
+### Tier 3: One focused search agent
+
+If the host supports delegation and a specific question remains unresolved, give one scout:
+
+- the unresolved question;
+- current semantic and deterministic jump targets;
+- the missing evidence role or competing hypothesis;
+- an explicit tool-call and token limit;
+- a requirement to return file/line evidence and negative checks.
+
+Do not use multi-agent search for ordinary navigation. The scout builds a small search context; it does not recursively explore the repository.
+
+## Query Construction
+
+For deterministic queries, use exact identifiers:
+
+- `"parseGlobalOptions runSkillInstall handleSemanticCompact"`
+- `"adminRoutes registerAdminRoutes Hono app.route"`
+
+For semantic frontier queries, describe one behavior or boundary at a time:
+
+- `"background cleanup during process shutdown"`
+- `"machine-readable CLI output while installing the skill"`
+
+Do not mix unrelated frontend, backend, and infrastructure questions. Prefer two bounded domain queries over one keyword dump.
+
+## JSON Evidence Contract
+
+Read these fields first:
+
+- `jumpTargets`: ranked file, symbol, start/end lines, role, confidence, relevance, reasons, and optional snippet;
+- `byFile`: the same targets grouped by file;
+- `metadata.retrievalStrategy`: `deterministic`, `hybrid-symbol`, or `hybrid-concept`;
+- `metadata.semanticCandidates`: semantic chunks considered before final selection;
+- `metadata.moduleCoverage`: number of represented file/module prefixes;
+- `embeddingSync`: whether freshness was checked, updated, or degraded, including update errors;
+- `evidence`: compact symbol and location references;
+- `nextActions`: suggestions that still require agent judgment;
+- `answerDraft`: routing metadata only, never the final response.
+
+Semantic targets now retain the indexed chunk's actual symbol and line range. Discard unsupported narrative and repeated locations. Every final claim should trace to a target or an exact follow-up read.
+
+## Command Selection
+
+| Need | Command |
+|---|---|
+| Unknown vocabulary or cross-system behavior | `context --embeddings --format index` |
+| Known functions, classes, paths, or env keys | `context --no-embeddings --format index` |
+| First project orientation without a semantic index | `hints`, then `manifest` |
+| Exact structural match | `grep` |
+| Single-file API and complexity | `summary` |
+| Error log to likely code | `debug` |
+| Frontend topology | `frontend` |
+| Embedding health or maintenance | `embeddings status`, `check_stale`, or `validate` |
+| Skill artifact validation | `skill verify` |
+
+## Stop Conditions
+
+Stop retrieving when:
+
+- every required evidence role has a grounded location;
+- semantic discovery has been converted into verified symbols or line ranges;
+- exact identifiers from the request are represented;
+- at least one competing module or negative check has challenged the leading hypothesis;
+- additional results are duplicates or add no module, relationship, or evidence-role novelty;
+- the remaining uncertainty is a reasoning question rather than missing code.
+
+Report unresolved evidence explicitly instead of spending an unbounded search budget.
+
+## Installation and Troubleshooting
+
+Use an explicit absolute project path. If the command fails before returning JSON:
+
+```text
+ambiance doctor --json
+ambiance --version
+```
+
+If `coverage.missingFiles` or `check_stale.incompleteCount` is nonzero, run one `context --embeddings` query or `embeddings update`; incremental repair should fill the gaps. Use `embeddings create --force true` only for incompatible or irreparably corrupt indexes.
+
+For a local checkout, build before linking so `dist/src/cli.js` is current. After updating shipped skill files, reinstall the skill into the active agent environment and compare the installed copy with the package copy.
+
+Run `ambiance skill verify --json` after changes.
 
 ## Skill Assets
 
-- Command/workflow capability map: `skills/ambiance/capabilities.json`
-- Workflow templates: `skills/ambiance/workflows/*.json`
-- Recipe templates: `skills/ambiance/recipes/*.json`
-- CLI help: `ambiance --help`, `ambiance --help --expanded`, `ambiance <command> --help`
-- CLI introspection: `ambiance skill list --json`, `ambiance skill workflow <name> --json`, `ambiance skill recipe <name> --json`
-- Agent quick reference: `skills/ambiance/AGENT_GUIDE.md`
-- Detailed docs: `skills/ambiance/README.md`
-- Troubleshooting patterns: `skills/ambiance/TROUBLESHOOTING.md`
+- Capability map: `skills/ambiance/capabilities.json`
+- Workflows: `skills/ambiance/workflows/*.json`
+- Recipes: `skills/ambiance/recipes/*.json`
+- Quick reference: `skills/ambiance/AGENT_GUIDE.md`
+- Detailed documentation: `skills/ambiance/README.md`
+- Troubleshooting: `skills/ambiance/TROUBLESHOOTING.md`

@@ -171,13 +171,6 @@ export class TreeSitterProcessor {
       return { chunks, symbols: [], xrefs: [] };
     }
 
-    const parser = this.parsers.get(language);
-    if (!parser) {
-      logger.warn('No parser available for language', { language, filePath });
-      const chunks = this.fallbackChunking(content, filePath);
-      return { chunks, symbols: [], xrefs: [] };
-    }
-
     try {
       // Additional validation before parsing
       if (content.length === 0) {
@@ -199,6 +192,13 @@ export class TreeSitterProcessor {
           isTooLarge,
           contentLength: content.length,
         });
+        const chunks = this.fallbackChunking(content, filePath);
+        return { chunks, symbols: [], xrefs: [] };
+      }
+
+      const parser = this.parsers.get(language);
+      if (!parser) {
+        logger.warn('No parser available for language', { language, filePath });
         const chunks = this.fallbackChunking(content, filePath);
         return { chunks, symbols: [], xrefs: [] };
       }
@@ -424,7 +424,7 @@ export class TreeSitterProcessor {
           const ids = node.descendantsOfType(['identifier', 'property_identifier']);
           if (ids && ids[0] && ids[0].text) return ids[0].text;
         }
-      } catch { }
+      } catch {}
       return undefined;
     } catch (error) {
       logger.warn('Error getting symbol name', {
@@ -573,7 +573,7 @@ export class TreeSitterProcessor {
               const dotted = node.descendantsOfType('dotted_name');
               if (dotted && dotted[0] && dotted[0].text) modulePath = dotted[0].text;
             }
-          } catch { }
+          } catch {}
 
           try {
             if (typeof node.descendantsOfType === 'function') {
@@ -589,7 +589,7 @@ export class TreeSitterProcessor {
                 });
               }
             }
-          } catch { }
+          } catch {}
         }
       }
 

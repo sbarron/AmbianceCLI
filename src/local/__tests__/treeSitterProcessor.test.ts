@@ -222,9 +222,9 @@ describe('TreeSitterProcessor', () => {
       const chunks = (processor as any).fallbackChunking(content, '/test/newlines-only.js');
 
       expect(chunks).toHaveLength(1);
-      expect(chunks[0].content).toBe(content);
+      expect(chunks[0].content).toBe('');
       expect(chunks[0].startLine).toBe(1);
-      expect(chunks[0].endLine).toBe(4);
+      expect(chunks[0].endLine).toBe(1);
     });
 
     test('should handle very long lines', () => {

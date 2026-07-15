@@ -1,9 +1,9 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
 const includeIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 
-const testMatch = includeIntegrationTests
-  ? ['**/src/**/*.test.ts', '**/tests/**/*.test.js']
-  : ['**/tests/**/*.test.js'];
+// Source-level TypeScript tests are always part of the default quality gate.
+// RUN_INTEGRATION_TESTS only controls the slower integration exclusions below.
+const testMatch = ['**/src/**/*.test.ts', '**/tests/**/*.test.js'];
 
 const testPathIgnorePatterns = [
   'tools-old/',
@@ -34,29 +34,27 @@ module.exports = {
   testPathIgnorePatterns,
   moduleFileExtensions: ['ts', 'js', 'json'],
   transform: {
-    '^.+\\.ts$': ['ts-jest', {
-      useESM: false,
-      tsconfig: 'tsconfig.json',
-      diagnostics: false
-    }]
+    '^.+\\.ts$': [
+      'ts-jest',
+      {
+        useESM: false,
+        tsconfig: 'tsconfig.json',
+        diagnostics: false,
+      },
+    ],
   },
-  transformIgnorePatterns: [
-    'node_modules/(?!(node-fetch|@babel|tree-sitter|@xenova))'
-  ],
+  transformIgnorePatterns: ['node_modules/(?!(node-fetch|@babel|tree-sitter|@xenova))'],
   moduleNameMapper: {
     '^node-fetch$': 'node-fetch',
-    '^globby$': '<rootDir>/__mocks__/globby.js',
-    '^fs$': '<rootDir>/__mocks__/fs.js',
-    '^fs/promises$': '<rootDir>/__mocks__/fs.js',
     '^tree-sitter$': '<rootDir>/__mocks__/tree-sitter.js',
     '^tree-sitter-typescript$': '<rootDir>/__mocks__/tree-sitter-lang.js',
     '^tree-sitter-javascript$': '<rootDir>/__mocks__/tree-sitter-lang.js',
     '^tree-sitter-python$': '<rootDir>/__mocks__/tree-sitter-lang.js',
-    '^@xenova/transformers$': '<rootDir>/__mocks__/@xenova/transformers.js',
+    '^@huggingface/transformers$': '<rootDir>/__mocks__/@huggingface/transformers.js',
+    '^sqlite3$': '<rootDir>/__mocks__/sqlite3.js',
   },
-  // Add timeout and force exit to prevent hanging
+  // Let Jest report leaked handles instead of masking them with forceExit.
   testTimeout: 10000,
-  forceExit: true,
   // Verbose output for better debugging
-  verbose: true
+  verbose: true,
 };

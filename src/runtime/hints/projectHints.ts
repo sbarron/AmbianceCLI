@@ -99,13 +99,13 @@ export async function handleProjectHints(args: any): Promise<any> {
         type: 'folder-specific',
         ...(showmetadata
           ? {
-            metadata: {
-              folderPath,
-              keyFiles: folderHints.keyFiles.length,
-              subFolders: folderHints.subFolders.length,
-              confidence: folderHints.confidence,
-            },
-          }
+              metadata: {
+                folderPath,
+                keyFiles: folderHints.keyFiles.length,
+                subFolders: folderHints.subFolders.length,
+                confidence: folderHints.confidence,
+              },
+            }
           : {}),
       };
     }
@@ -175,19 +175,19 @@ export async function handleProjectHints(args: any): Promise<any> {
         type: 'enhanced-project-wide',
         ...(showmetadata
           ? {
-            metadata: {
-              filesAnalyzed: enhancedSummary.summary.files,
-              capabilities: enhancedSummary.capabilities.domains,
-              hintsCount: enhancedSummary.hints.length,
-              riskScore: enhancedSummary.risks.score,
-              nextMode: enhancedSummary.next.mode,
-              hasQuery: !!query,
-              enhanced: true,
-              embeddingAssisted:
-                (hintsGenerator as any)['shouldUseEmbeddingAssistedHints']?.() || false,
-              fileComposition: fileCompositionStructured,
-            },
-          }
+              metadata: {
+                filesAnalyzed: enhancedSummary.summary.files,
+                capabilities: enhancedSummary.capabilities.domains,
+                hintsCount: enhancedSummary.hints.length,
+                riskScore: enhancedSummary.risks.score,
+                nextMode: enhancedSummary.next.mode,
+                hasQuery: !!query,
+                enhanced: true,
+                embeddingAssisted:
+                  (hintsGenerator as any)['shouldUseEmbeddingAssistedHints']?.() || false,
+                fileComposition: fileCompositionStructured,
+              },
+            }
           : {}),
       };
     } else {
@@ -213,19 +213,19 @@ export async function handleProjectHints(args: any): Promise<any> {
       type: 'project-wide',
       ...(showmetadata
         ? {
-          metadata: {
-            filesAnalyzed: hints.totalFiles,
-            foldersFound: Object.keys(hints.folderHints).length,
-            primaryLanguages: hints.primaryLanguages,
-            architecturePatterns: hints.architectureKeywords,
-            topFunctions: hints.symbolHints.functions.slice(0, 10).map((f: any) => f.word),
-            codebaseSize: hints.codebaseSize,
-            enhanced: false,
-            embeddingAssisted:
-              (hintsGenerator as any)['shouldUseEmbeddingAssistedHints']?.() || false,
-            fileComposition,
-          },
-        }
+            metadata: {
+              filesAnalyzed: hints.totalFiles,
+              foldersFound: Object.keys(hints.folderHints).length,
+              primaryLanguages: hints.primaryLanguages,
+              architecturePatterns: hints.architectureKeywords,
+              topFunctions: hints.symbolHints.functions.slice(0, 10).map((f: any) => f.word),
+              codebaseSize: hints.codebaseSize,
+              enhanced: false,
+              embeddingAssisted:
+                (hintsGenerator as any)['shouldUseEmbeddingAssistedHints']?.() || false,
+              fileComposition,
+            },
+          }
         : {}),
     };
   } catch (error) {

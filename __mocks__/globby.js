@@ -6,24 +6,26 @@ const globby = jest.fn().mockImplementation(async (patterns, options) => {
     'src/utils.ts',
     'src/processor.ts',
     'src/complex.ts',
-    'src/index.js',
+    'src/worker.js',
     'src/utils.js',
     'duplicate1.ts',
     'duplicate2.ts',
     'internal.ts',
     'exported.ts',
-    'package.json'
+    'package.json',
   ];
-  
+
   // Return empty array for non-existent paths to trigger error handling
-  if (options && options.cwd && (
-    options.cwd.includes('/non/existent/path') || 
-    options.cwd.includes('\\non\\existent\\path') ||
-    options.cwd.includes('definitely\\non\\existent\\path')
-  )) {
+  if (
+    options &&
+    options.cwd &&
+    (options.cwd.includes('/non/existent/path') ||
+      options.cwd.includes('\\non\\existent\\path') ||
+      options.cwd.includes('definitely\\non\\existent\\path'))
+  ) {
     return [];
   }
-  
+
   // Filter based on patterns if provided
   if (patterns && patterns.length > 0) {
     const filteredFiles = mockFiles.filter(file => {
@@ -40,7 +42,7 @@ const globby = jest.fn().mockImplementation(async (patterns, options) => {
         return true;
       });
     });
-    
+
     // Apply ignore patterns if provided
     if (options && options.ignore) {
       return filteredFiles.filter(file => {
@@ -58,25 +60,25 @@ const globby = jest.fn().mockImplementation(async (patterns, options) => {
         });
       });
     }
-    
+
     // Handle absolute option
     if (options && options.absolute) {
       const cwd = options.cwd || process.cwd();
       return filteredFiles.map(file => `${cwd}/${file}`);
     }
-    
+
     return filteredFiles;
   }
-  
+
   // Handle absolute option for default case
   if (options && options.absolute) {
     const cwd = options.cwd || process.cwd();
     return mockFiles.map(file => `${cwd}/${file}`);
   }
-  
+
   return mockFiles;
 });
 
 module.exports = {
-  globby
+  globby,
 };

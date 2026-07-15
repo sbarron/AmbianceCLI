@@ -11,14 +11,14 @@ let transformersModule: any = null;
 async function initializeTransformers() {
   if (!transformersModule) {
     try {
-      transformersModule = await import('@xenova/transformers');
-      logger.debug('✅ @xenova/transformers loaded successfully');
+      transformersModule = await import('@huggingface/transformers');
+      logger.debug('✅ @huggingface/transformers loaded successfully');
     } catch (error) {
-      logger.warn('⚠️ @xenova/transformers not available, local embeddings disabled', {
+      logger.warn('⚠️ @huggingface/transformers not available, local embeddings disabled', {
         error: error instanceof Error ? error.message : String(error),
       });
       throw new Error(
-        'Local embeddings not available: @xenova/transformers package could not be loaded'
+        'Local embeddings not available: @huggingface/transformers package could not be loaded'
       );
     }
   }
@@ -85,7 +85,7 @@ export class LocalEmbeddingProvider {
     const envModel = process.env.LOCAL_EMBEDDING_MODEL;
     if (envModel) {
       // Validate the environment variable value
-      switch (envModel.toLowerCase()) {
+      switch (envModel.trim().toLowerCase()) {
         case 'all-minilm-l6-v2':
           return 'all-MiniLM-L6-v2';
         case 'multilingual-e5-large':
@@ -541,7 +541,7 @@ export function getDefaultLocalProvider(config?: LocalEmbeddingConfig): LocalEmb
   if (!defaultProvider) {
     // If no config provided and we have LOCAL_EMBEDDING_MODEL set, use it
     if (!config && process.env.LOCAL_EMBEDDING_MODEL) {
-      const envModel = process.env.LOCAL_EMBEDDING_MODEL.toLowerCase();
+      const envModel = process.env.LOCAL_EMBEDDING_MODEL.trim().toLowerCase();
       let modelName:
         | 'all-MiniLM-L6-v2'
         | 'multilingual-e5-large'

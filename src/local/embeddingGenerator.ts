@@ -602,7 +602,11 @@ export class LocalEmbeddingGenerator {
       const batch = chunks.slice(i, i + batchSize);
       const batchContents = batch
         .map(chunk => {
-          if (chunk.content !== undefined && chunk.content !== null && typeof chunk.content === 'string') {
+          if (
+            chunk.content !== undefined &&
+            chunk.content !== null &&
+            typeof chunk.content === 'string'
+          ) {
             // Prepend file path to help the model associate chunks with their location
             // This enables searching by filename or path, even for fallback chunks without symbols
             return `File: ${relativePath}\n\n${chunk.content}`;
@@ -960,22 +964,6 @@ export class LocalEmbeddingGenerator {
     // VoyageAI/Ambiance API removed as service is no longer available
     const providers = [
       {
-        name: 'openai',
-        available: !!this.openai && LocalEmbeddingGenerator.isProviderAvailable('openai'),
-        getEmbeddings: async (texts: string[]) => {
-          if (!this.openai) {
-            throw new Error('OpenAI client not initialized');
-          }
-
-          // Truncate texts for OpenAI limit
-          const truncatedTexts = texts.map(text =>
-            text.length > 8000 ? text.substring(0, 8000) : text
-          );
-
-          return await this.callOpenAIWithRetry(truncatedTexts);
-        },
-      },
-      {
         name: 'local',
         available: true, // Always available as final fallback
         getEmbeddings: async (texts: string[]) => {
@@ -1018,7 +1006,25 @@ export class LocalEmbeddingGenerator {
           }
         },
       },
+      {
+        name: 'openai',
+        available: !!this.openai && LocalEmbeddingGenerator.isProviderAvailable('openai'),
+        getEmbeddings: async (texts: string[]) => {
+          if (!this.openai) {
+            throw new Error('OpenAI client not initialized');
+          }
+
+          // Truncate texts for OpenAI limit
+          const truncatedTexts = texts.map(text =>
+            text.length > 8000 ? text.substring(0, 8000) : text
+          );
+
+          return await this.callOpenAIWithRetry(truncatedTexts);
+        },
+      },
     ];
+
+    const providerErrors: string[] = [];
 
     for (const { name, available, getEmbeddings } of providers) {
       if (!available) {
@@ -1107,6 +1113,7 @@ export class LocalEmbeddingGenerator {
         return embeddings;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        providerErrors.push(`${name}: ${errorMessage}`);
         const isRateLimitExhausted = errorMessage.startsWith('RATE_LIMIT_EXHAUSTED');
         const isTemporaryFailure = isRateLimitExhausted || errorMessage.includes('Rate limit');
 
@@ -1143,8 +1150,9 @@ export class LocalEmbeddingGenerator {
       .join(', ');
     throw new Error(
       `Embedding generation failed with all providers. ` +
-      `Available providers: ${availableProviders}. ` +
-      `Check API keys, network connectivity, and provider configurations.`
+        `Available providers: ${availableProviders}. ` +
+        `Provider errors: ${providerErrors.join('; ')}. ` +
+        `Check API keys, network connectivity, and provider configurations.`
     );
   }
 
@@ -1653,6 +1661,7 @@ export class LocalEmbeddingGenerator {
       ignoreFiles: ['.gitignore', '.cursorignore', '.vscodeignore', '.ambianceignore'],
       absolute: true,
       onlyFiles: true,
+      suppressErrors: true,
     });
 
     // Additional safety filtering to ensure ignored directories are not processed

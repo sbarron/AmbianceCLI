@@ -760,14 +760,25 @@ export class ASTParser {
   }
 
   private isExported(path: any): boolean {
-    let current = path;
-    while (current) {
-      if (t.isExportDefaultDeclaration(current.node) || t.isExportNamedDeclaration(current.node)) {
-        return true;
-      }
-      current = current.parentPath;
+    if (!path?.node) return false;
+
+    // Export status belongs to the declaration itself, not every descendant of
+    // an exported function or class. Walking the complete ancestor chain marks
+    // local variables inside exported functions as public API symbols.
+    let declarationPath = path;
+    if (t.isVariableDeclarator(declarationPath.node) && declarationPath.parentPath) {
+      declarationPath = declarationPath.parentPath;
     }
-    return false;
+
+    if (
+      t.isExportDefaultDeclaration(declarationPath.node) ||
+      t.isExportNamedDeclaration(declarationPath.node)
+    ) {
+      return true;
+    }
+
+    const parentNode = declarationPath.parentPath?.node;
+    return t.isExportDefaultDeclaration(parentNode) || t.isExportNamedDeclaration(parentNode);
   }
 
   private paramToString(param: t.Identifier | t.Pattern | t.RestElement): string {
@@ -828,7 +839,9 @@ export class ASTParser {
     if (t.isTemplateLiteral(node)) {
       let text = '';
       if (node.quasis) {
-        node.quasis.forEach((q: any) => { text += q.value?.raw || ''; });
+        node.quasis.forEach((q: any) => {
+          text += q.value?.raw || '';
+        });
       }
       const lines = text.split('\n').length;
       if (lines > 1) return `template string (${lines} lines)`;

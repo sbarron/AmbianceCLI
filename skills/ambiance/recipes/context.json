@@ -1,77 +1,60 @@
 {
   "name": "context",
-  "description": "Generate semantic project context for a query. Default format is 'enhanced' which returns jump targets, code snippets, answer analysis, evidence, and next actions. Embeddings are automatically created if missing and refreshed if stale when --embeddings flag is used.",
+  "description": "Generate verified project evidence with a semantic frontier and deterministic structural ranking. Use --no-embeddings when exact code identifiers are already known.",
   "defaults": {
-    "maxTokens": 3000,
-    "format": "enhanced"
+    "maxTokens": 1600,
+    "format": "index",
+    "useEmbeddings": true
   },
   "command": "context",
   "args": [
     "${query}",
+    "--format",
+    "index",
+    "--embeddings",
     "--json",
     "--project-path",
     "${projectPath}",
     "--max-tokens",
-    "${maxTokens}",
-    "--embeddings"
+    "${maxTokens}"
   ],
   "optionalArgs": [
-    "--format <enhanced|index|system-map>",
+    "--format <enhanced|system-map>",
     "--task-type <understand|implement|review>",
-    "--auto-sync-batch-size <n>",
     "--exclude-patterns <a,b,c>",
     "--no-embeddings"
   ],
   "outputSchema": {
-    "enhanced_format": {
-      "content": "string - markdown-formatted analysis (query analysis, key locations, code snippets, next actions, evidence)",
-      "compactedContent": "string - same as content (for backward compatibility)",
-      "usage": "string - token usage summary",
-      "enhanced": "boolean - true when enhanced pipeline was used",
-      "embeddingsUsed": "boolean - true when embedding similarity influenced ranking",
-      "jumpTargets": "array - code locations with file, symbol, start/end lines, confidence, relevance, why reasons, and snippet",
-      "byFile": "object - jump targets grouped by file path",
-      "answerDraft": "string - deterministic answer summary from template system",
-      "nextActions": "object - { mode, openFiles, checks } suggested next steps",
-      "evidence": "array - symbol@file:line references"
-    },
-    "index_format": {
-      "content": "string - same as enhanced but without code snippets section",
-      "jumpTargets": "array - code locations with file:line, confidence, relevance, and snippet",
-      "byFile": "object - jump targets grouped by file path",
-      "answerDraft": "string - quick summary text",
-      "nextActions": "object - suggested files to examine and verification commands",
-      "evidence": "array - symbol@file:line references"
-    }
+    "jumpTargets": "array - ranked file, symbol, line range, confidence, relevance, reasons, and optional snippet",
+    "byFile": "object - jump targets grouped by file",
+    "metadata": "object - retrieval strategy, semantic candidate count, module coverage, token counts, roles, and timing",
+    "embeddingSync": "object - skipped, checked, updated, or degraded embedding state",
+    "evidence": "array - compact symbol and location references",
+    "nextActions": "object - suggested checks requiring agent judgment",
+    "answerDraft": "string - deterministic routing metadata, not a final answer"
   },
   "formats": [
     {
-      "flag": "(default, no --format flag)",
-      "purpose": "Full enhanced analysis with code snippets",
-      "returns": "Jump targets, code snippets, answer analysis, evidence, and next actions",
-      "useCases": ["Understand code", "Implementation prep", "Code review", "Architecture analysis"]
+      "flag": "--format index",
+      "purpose": "Low-token default navigation",
+      "returns": "Jump targets without the code snippets section"
     },
     {
-      "flag": "--format index",
-      "purpose": "Compact navigation without code snippets",
-      "returns": "Jump target locations only (file:line with confidence and relevance)",
-      "useCases": ["IDE navigation", "Agent jump-to-definition", "Broad reference sweeps"]
+      "flag": "(no --format flag)",
+      "purpose": "Focused evidence with snippets",
+      "returns": "Jump targets, snippets, evidence, and next actions"
     },
     {
       "flag": "--format system-map",
-      "purpose": "Architecture overview using shared retriever",
-      "returns": "System map with coverage metrics",
-      "useCases": ["Architecture overview", "System topology"]
+      "purpose": "Architecture overview",
+      "returns": "System map with coverage metrics"
     }
   ],
   "notes": [
-    "Default format is 'enhanced' — returns jump targets, code snippets, evidence, and next actions",
-    "Embeddings are automatically created if missing and refreshed if stale when --embeddings is used",
-    "No manual embedding setup needed — just pass --embeddings and the context command handles the lifecycle",
-    "Query strategy: use symbol-anchored queries (concrete function/class names), not conversational questions",
-    "Use --format index for compact jump-target-only output without code snippets",
-    "Embedding similarity scores are fed into candidate ranking when available, improving result relevance",
-    "Higher maxTokens = more complete code snippets in output",
-    "Use --task-type to focus analysis (understand, implement, review)"
+    "Use --embeddings for conceptual or cross-system questions whose implementation vocabulary is unknown",
+    "Use --no-embeddings for concrete function, class, route, configuration, or path identifiers",
+    "Convert semantic chunk symbols into one deterministic follow-up query",
+    "Challenge the leading subsystem with one competing module or negative check",
+    "Stop when every required evidence role has a grounded location and added results provide no novelty"
   ]
 }

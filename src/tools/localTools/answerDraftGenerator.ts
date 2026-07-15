@@ -535,7 +535,9 @@ function generateFallbackAnswer(
   if (roleSummaries.length === 0) {
     const topTargets = targets.slice(0, 4);
     for (const t of topTargets) {
-      roleSummaries.push(`\`${t.symbol}\` in ${getRelativePath(t.file)}${t.why?.[0] ? ` (${t.why[0]})` : ''}`);
+      roleSummaries.push(
+        `\`${t.symbol}\` in ${getRelativePath(t.file)}${t.why?.[0] ? ` (${t.why[0]})` : ''}`
+      );
     }
   }
 

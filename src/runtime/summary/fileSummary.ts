@@ -497,11 +497,11 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
           methods:
             symbol.body && symbol.body.startsWith('Methods:')
               ? symbol.body
-                .replace('Methods:', '')
-                .trim()
-                .split(',')
-                .map(m => m.trim())
-                .filter(m => m && m !== 'constructor')
+                  .replace('Methods:', '')
+                  .trim()
+                  .split(',')
+                  .map(m => m.trim())
+                  .filter(m => m && m !== 'constructor')
               : [],
         });
       } else if (symbol.type === 'interface') {

@@ -85,7 +85,7 @@ export class ResourceGuard {
   /**
    * Dispose all resources and shut down.
    */
-  async disposeAll(permanent: boolean = false): Promise<void> {
+  async disposeAll(permanent: boolean = true): Promise<void> {
     // If we're already in a disposed state and asked again, just return
     if (this.disposed && permanent) {
       return;
@@ -270,6 +270,8 @@ export class ResourceGuard {
       },
       5 * 60 * 1000
     ); // Check every 5 minutes
+    // Background cleanup must not keep short-lived CLI and test processes alive.
+    this.cleanupTimer.unref();
   }
 
   /**

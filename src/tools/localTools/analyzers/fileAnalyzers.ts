@@ -265,10 +265,10 @@ export async function analyzeJsonFile(
       hasNesting: jsonInfo.depth > 1,
       dataTypes: jsonInfo.nestedStructure
         ? Object.entries(jsonInfo.nestedStructure).map(([key, info]: [string, any]) => ({
-          key,
-          type: info.type,
-          depth: info.depth,
-        }))
+            key,
+            type: info.type,
+            depth: info.depth,
+          }))
         : [],
       depth: jsonInfo.depth,
       configType: jsonInfo.configType,
