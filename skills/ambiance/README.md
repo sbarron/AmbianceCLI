@@ -61,6 +61,7 @@ ambiance skill verify --json
 | Single file summary | `summary <file>` | Quick file overview | No |
 | Manage embeddings | `embeddings <action>` | Setup, maintenance, status checks | N/A |
 | Context packs | `packs <action>` | Save/load reusable context | No |
+| Cross-agent continuity | `handoff [action]` | List Codex/Claude sessions and create portable handoffs | No |
 
 ## Search Routing Policy
 
@@ -532,6 +533,33 @@ ambiance packs list --json
 ambiance packs get --name "auth-system" --json
 ```
 
+### `handoff` - Portable Agent Continuity
+
+**Purpose**: Recover locally retained Codex and Claude work as a compact, evidence-linked handoff.
+The source transcript is read-only; the generated handoff is stored under `~/.ambiance/handoffs`
+unless `AMBIANCE_HANDOFFS_DIR` or `--handoffs-dir` overrides it.
+
+```bash
+# Numbered titles scoped to the current project
+ambiance handoff list --json --project-path ./
+
+# Compact recovery for another model or agent
+ambiance handoff create 2 --compact --json --project-path ./
+
+# Stable automation after parsing the list
+ambiance handoff create --session-id <session-id> --max-tokens 4000 --json --project-path ./
+
+# Inspect retained verification evidence without loading the whole transcript
+ambiance handoff evidence <handoff-id> --tests --json
+```
+
+`--compact` targets 2,000 tokens; standard mode targets 6,000. Use `--max-tokens` to override.
+The first `handoff create` in a fresh environment may take ~30s while the local embedding model
+loads for code-evidence refresh; subsequent runs complete in a few seconds.
+The JSON list includes both a human-friendly `selection` and stable `sessionId`. Pass the returned
+`listId` to `handoff create --list-id <id>` when numbered selection must fail safely if the list changes.
+Raw transcript copying is opt-in through `--include-transcript` because provider logs may contain secrets.
+
 ## Parameter Guidelines
 
 ### `--max-tokens`
@@ -950,7 +978,16 @@ Expected output:
   },
   "skills": {
     "workflows": ["debug.json", "implement.json", "review.json", "understand.json"],
-    "recipes": ["context.json", "debug.json", "doctor.json", "embeddings-status.json"]
+    "recipes": [
+      "context.json",
+      "debug.json",
+      "doctor.json",
+      "embeddings-status.json",
+      "handoff-create.json",
+      "handoff-evidence.json",
+      "handoff-list.json",
+      "handoff-show.json"
+    ]
   }
 }
 ```

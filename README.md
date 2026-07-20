@@ -31,6 +31,19 @@ ambiance skill verify --json
 
 ## More Demos
 
+### `ambiance handoff` — Portable agent continuity
+Discover locally retained Codex and Claude sessions by numbered title, then create a compact,
+evidence-linked handoff that reconciles the conversation with the repository's current state.
+
+```bash
+ambiance handoff
+ambiance handoff create 2 --compact
+ambiance handoff evidence <handoff-id> --tests --json
+```
+
+Handoffs are stored outside the repository under `~/.ambiance/handoffs` by default. Source
+transcripts are read-only and are copied only when `--include-transcript` is explicitly supplied.
+
 ### `ambiance hints` — Instant project orientation
 One command gives any agent or developer a full orientation to an unfamiliar codebase: architecture patterns, key folders, entry points, and top functions.
 
@@ -64,6 +77,7 @@ All commands support JSON mode via `--json`.
 - `ambiance frontend --json --project-path <path>`
 - `ambiance embeddings <action> --json --project-path <path>`
 - `ambiance packs <create|list|get|delete|template|ui> --json`
+- `ambiance handoff [list|create|show|evidence] --json`
 - `ambiance compare --prompt "<prompt>" --json`
 
 ## Agent Skill Workflows

@@ -401,6 +401,32 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
     ],
   },
   {
+    title: 'Portable Handoffs',
+    summary: 'Local coding-agent session discovery and evidence-linked handoff storage.',
+    vars: [
+      {
+        name: 'AMBIANCE_CODEX_SESSIONS_DIR',
+        defaultValue: '~/.codex/sessions',
+        description: 'Override the read-only Codex session discovery root.',
+      },
+      {
+        name: 'AMBIANCE_CLAUDE_PROJECTS_DIR',
+        defaultValue: '~/.claude/projects',
+        description: 'Override the read-only Claude session discovery root.',
+      },
+      {
+        name: 'AMBIANCE_HANDOFFS_DIR',
+        defaultValue: '~/.ambiance/handoffs',
+        description: 'Override the durable handoff artifact root.',
+      },
+      {
+        name: 'AMBIANCE_HANDOFF_CACHE_DIR',
+        defaultValue: '~/.ambiance/cache',
+        description: 'Override the incremental session catalog cache root.',
+      },
+    ],
+  },
+  {
     title: 'Diagnostics & Logging',
     summary: 'Flags that adjust logging verbosity.',
     vars: [
@@ -444,6 +470,7 @@ const commands = [
   'skill',
   'migrate',
   'packs',
+  'handoff',
   'embeddings',
   'ambiance_auto_detect_index',
   'ambiance_index_project',
@@ -614,6 +641,7 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log(
     '  packs                  Context pack workflows (create/list/get/delete/template/ui)'
   );
+  console.log('  handoff                Portable Codex/Claude session handoffs');
   console.log(
     '  embeddings             Embedding management and workspace configuration (default: turbo4 quantization)'
   );
@@ -640,6 +668,8 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('  ambiance context --query "How does authentication work?" --max-tokens 2000');
   console.log('  ambiance hints --json --project-path /path/to/project --max-files 200');
   console.log('  ambiance packs create --name "arch" --query "Architecture overview" --json');
+  console.log('  ambiance handoff list --json');
+  console.log('  ambiance handoff create 1 --compact --json');
   console.log('  ambiance doctor --json');
   console.log('  ambiance skill verify --json');
   console.log('  ambiance migrate mcp-map --json');
@@ -914,6 +944,35 @@ function showCommandHelp(command: string): void {
       '  create flags: --name <name> --query <query> [--task-type <type>]',
       '  get/delete: pass ID as positional arg or --id <id>',
     ],
+    handoff: [
+      'ambiance handoff',
+      '----------------',
+      'Discover local Codex and Claude sessions and create portable, evidence-linked handoffs.',
+      '',
+      'Usage:',
+      '  ambiance handoff [list] [--source codex,claude] [--limit <n>] [--json]',
+      '  ambiance handoff create <number> [--compact] [--max-tokens <n>] [--json]',
+      '  ambiance handoff create --session-id <id> [--compact] [--json]',
+      '  ambiance handoff show <handoff-id> [--json]',
+      '  ambiance handoff evidence <handoff-id> [--tests] [--kind <kind>] [--json]',
+      '',
+      ...common,
+      '  --source <sources>       codex, claude, or comma-separated values',
+      '  --all-projects           Do not filter sessions by current project',
+      '  --list-id <id>           Reject numbered selection if the list changed',
+      '  --compact                Target a 2,000-token handoff (default: 6,000)',
+      '  --max-tokens <n>         Override the handoff token budget',
+      '  --include-transcript     Explicitly copy the raw source JSONL',
+      '  --handoffs-dir <path>    Override ~/.ambiance/handoffs',
+      '  --id <evidence-id>       Select one evidence record',
+      '  --turns <a..b>           Filter evidence by source JSONL lines',
+      '',
+      'Examples:',
+      '  ambiance handoff',
+      '  ambiance handoff create 2 --compact',
+      '  ambiance handoff create --session-id 019f... --max-tokens 4000 --json',
+      '  ambiance handoff evidence <id> --tests --json',
+    ],
     doctor: [
       'ambiance doctor',
       '--------------',
@@ -968,13 +1027,19 @@ function showCommandHelp(command: string): void {
     'frontend',
     'grep',
     'hints',
+    'handoff',
     'packs',
     'summary',
   ]);
 
   if (recipeBackedCommands.has(command)) {
     console.log('');
-    const recipeName = command === 'embeddings' ? 'embeddings-status' : command;
+    const recipeName =
+      command === 'embeddings'
+        ? 'embeddings-status'
+        : command === 'handoff'
+          ? 'handoff-list'
+          : command;
     console.log(`Recipe details: ambiance skill recipe ${recipeName} --json`);
   }
 
@@ -1508,6 +1573,125 @@ async function executeToolCommand(
           timestamp: new Date().toISOString(),
           map: getMcpToolMigrationMap(),
         };
+        break;
+      }
+
+      case 'handoff': {
+        const allowedKeys = [
+          'source',
+          'limit',
+          'allProjects',
+          'sessionId',
+          'listId',
+          'compact',
+          'maxTokens',
+          'handoffsDir',
+          'includeTranscript',
+          'id',
+          'kind',
+          'tests',
+          'turns',
+        ];
+        const unknownFlags = findUnknownToolFlags(toolArgs, allowedKeys);
+        if (unknownFlags.length > 0) {
+          exitWithError({
+            command: 'handoff',
+            message:
+              `Unknown handoff option(s): ${unknownFlags.join(', ')}. ` +
+              'Run "ambiance handoff --help" for supported flags.',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+
+        const parsed = parseToolSpecificArgs(toolArgs, allowedKeys);
+        const positional = extractPositionalArgs(toolArgs, allowedKeys);
+        const first = positional[0];
+        const shorthandSelection = first && /^\d+$/.test(first) ? Number(first) : undefined;
+        const action = shorthandSelection
+          ? 'create'
+          : first === 'create' || first === 'show' || first === 'evidence' || first === 'list'
+            ? first
+            : 'list';
+        const selectionToken =
+          action === 'create' ? (shorthandSelection ? first : positional[1]) : undefined;
+        const selection =
+          selectionToken && /^\d+$/.test(selectionToken) ? Number(selectionToken) : undefined;
+        const identifier = action === 'show' || action === 'evidence' ? positional[1] : undefined;
+        const sessionId =
+          typeof parsed.sessionId === 'string'
+            ? parsed.sessionId
+            : action === 'create' && selectionToken && selection === undefined
+              ? selectionToken
+              : undefined;
+
+        if (action === 'create' && selection === undefined && !sessionId) {
+          exitWithError({
+            command: 'handoff',
+            message: 'handoff create requires a numbered selection or --session-id <id>',
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+        if ((action === 'show' || action === 'evidence') && !identifier) {
+          exitWithError({
+            command: 'handoff',
+            message: `handoff ${action} requires a handoff identifier`,
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+
+        const validKinds = new Set([
+          'user',
+          'assistant',
+          'tool_call',
+          'tool_result',
+          'summary',
+          'error',
+          'system',
+        ]);
+        if (typeof parsed.kind === 'string' && !validKinds.has(parsed.kind)) {
+          exitWithError({
+            command: 'handoff',
+            message: `Unknown evidence kind: ${parsed.kind}`,
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+
+        const { handleHandoffCommand, parseHandoffSources } = await import('./runtime/handoff');
+        try {
+          result = await handleHandoffCommand({
+            action,
+            projectPath: globalOptions.projectPath || (await detectProjectPath()),
+            sources: parseHandoffSources(parsed.source),
+            allProjects: parsed.allProjects === true,
+            limit: typeof parsed.limit === 'number' ? parsed.limit : undefined,
+            selection,
+            sessionId,
+            listId: typeof parsed.listId === 'string' ? parsed.listId : undefined,
+            compact: parsed.compact === true,
+            maxTokens: typeof parsed.maxTokens === 'number' ? parsed.maxTokens : undefined,
+            handoffsDir: typeof parsed.handoffsDir === 'string' ? parsed.handoffsDir : undefined,
+            includeTranscript: parsed.includeTranscript === true,
+            identifier,
+            evidenceId: typeof parsed.id === 'string' ? parsed.id : undefined,
+            kind:
+              typeof parsed.kind === 'string'
+                ? (parsed.kind as import('./runtime/handoff').HandoffEventKind)
+                : undefined,
+            tests: parsed.tests === true,
+            turns: typeof parsed.turns === 'string' ? parsed.turns : undefined,
+          });
+        } catch (error) {
+          exitWithError({
+            command: 'handoff',
+            message: error instanceof Error ? error.message : String(error),
+            options: globalOptions,
+            exitCode: EXIT_CODES.RUNTIME_ERROR,
+          });
+        }
         break;
       }
 

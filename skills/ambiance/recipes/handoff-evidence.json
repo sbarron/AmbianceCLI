@@ -1,0 +1,10 @@
+{
+  "name": "handoff-evidence",
+  "description": "Retrieve selected evidence from a stored handoff without loading the full transcript.",
+  "defaults": {
+    "format": "json",
+    "limit": 100
+  },
+  "command": "handoff",
+  "args": ["evidence", "${handoffId}", "--json"]
+}

@@ -1,0 +1,10 @@
+{"timestamp":"2026-07-14T10:00:00.000Z","type":"session_meta","payload":{"session_id":"codex-fixture-session","cwd":"__PROJECT__","timestamp":"2026-07-14T10:00:00.000Z"}}
+{"timestamp":"2026-07-14T10:00:00.500Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<recommended_plugins>Automatically supplied UI state, not the user's request.</recommended_plugins>"}]}}
+{"timestamp":"2026-07-14T10:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Implement portable handoffs for src/index.ts without writing provider session files. api_key=super-secret-fixture-value","turn_id":"turn-1"}}
+{"timestamp":"2026-07-14T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Decision: use a normalized read-only adapter and keep raw transcripts in place."}]}}
+{"timestamp":"2026-07-14T10:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"shell_command","call_id":"call-1","input":"npm test"}}
+{"timestamp":"2026-07-14T10:00:04.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1","output":"Exit code: 0\nAll tests passed"}}
+{"timestamp":"2026-07-14T10:00:04.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The old src/removed.ts path no longer exists."}]}}
+{"timestamp":"2026-07-14T10:00:04.800Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-2","output":"[{\"type\":\"input_text\",\"text\":\"Script completed\\nWall time 2.0 seconds\\nOutput:\\nlint found no error strings\"}]"}}
+{"timestamp":"2026-07-14T10:00:05.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Implemented the adapter and verified the build passed.","turn_id":"turn-1"}}
+{partial-live-record

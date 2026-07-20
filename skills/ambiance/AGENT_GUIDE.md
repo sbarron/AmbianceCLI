@@ -64,5 +64,17 @@ Normal conceptual work is one semantic frontier plus one deterministic drilldown
 | Embedding truth and refresh | `embeddings status`, `check_stale`, `validate` |
 | Log-driven diagnosis | `debug` |
 | Frontend topology | `frontend` |
+| Resume a Codex/Claude task | `handoff list`, `handoff create --compact` |
 
 Use `ambiance doctor --json` for command failures and `ambiance skill verify --json` after changing skill artifacts.
+
+## Portable Handoff
+
+```text
+ambiance handoff list --json --project-path <path>
+ambiance handoff create <selection> --compact --list-id <listId> --json --project-path <path>
+ambiance handoff evidence <handoff-id> --tests --json
+```
+
+Prefer the compact handoff and retrieve cited evidence on demand. Use stable `sessionId` for automation;
+the numbered `selection` is a human-friendly shortcut.

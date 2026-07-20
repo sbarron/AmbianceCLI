@@ -284,6 +284,82 @@ describe('CLI JSON contracts', () => {
     expect(payload.exitCode).toBe(2);
   });
 
+  test('handoff list/create/show/evidence --json works end-to-end with numbered selection', () => {
+    const root = path.join(
+      process.cwd(),
+      'test-storage',
+      `handoff-contracts-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    );
+    const sessionsDir = path.join(root, 'codex');
+    const emptyClaudeDir = path.join(root, 'claude');
+    const handoffsDir = path.join(root, 'handoffs');
+    const cacheDir = path.join(root, 'cache');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.mkdirSync(emptyClaudeDir, { recursive: true });
+
+    const cwd = process.cwd().replace(/\\/g, '\\\\');
+    const sessionPath = path.join(sessionsDir, 'contract.jsonl');
+    fs.writeFileSync(
+      sessionPath,
+      [
+        `{"timestamp":"2026-07-14T10:00:00.000Z","type":"session_meta","payload":{"session_id":"contract-session","cwd":"${cwd}"}}`,
+        '{"timestamp":"2026-07-14T10:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Implement the handoff contract for src/cli.ts"}}',
+        '{"timestamp":"2026-07-14T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Implemented and verified the handoff CLI contract."}]}}',
+        '{"timestamp":"2026-07-14T10:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"npm test passed with exit code 0"}}',
+      ].join('\n') + '\n'
+    );
+
+    const env = {
+      AMBIANCE_CODEX_SESSIONS_DIR: sessionsDir,
+      AMBIANCE_CLAUDE_PROJECTS_DIR: emptyClaudeDir,
+      AMBIANCE_HANDOFFS_DIR: handoffsDir,
+      AMBIANCE_HANDOFF_CACHE_DIR: cacheDir,
+    };
+
+    const listRes = runCli(
+      ['handoff', 'list', '--source', 'codex', '--project-path', process.cwd(), '--json'],
+      env
+    );
+    expect(listRes.status).toBe(0);
+    const listed = parseJsonStdout(listRes.stdout);
+    schemas.handoffListSchema.parse(listed);
+    expect(listed.sessions[0]).toMatchObject({ selection: 1, sessionId: 'contract-session' });
+
+    const createRes = runCli(
+      [
+        'handoff',
+        'create',
+        '1',
+        '--source',
+        'codex',
+        '--compact',
+        '--list-id',
+        listed.listId,
+        '--project-path',
+        process.cwd(),
+        '--json',
+      ],
+      env
+    );
+    expect(createRes.status).toBe(0);
+    const created = parseJsonStdout(createRes.stdout);
+    schemas.handoffCreateSchema.parse(created);
+    expect(created.handoff.estimatedTokens).toBeLessThanOrEqual(2000);
+
+    const showRes = runCli(['handoff', 'show', created.handoff.id, '--json'], env);
+    expect(showRes.status).toBe(0);
+    schemas.handoffShowSchema.parse(parseJsonStdout(showRes.stdout));
+
+    const evidenceRes = runCli(
+      ['handoff', 'evidence', created.handoff.id, '--tests', '--json'],
+      env
+    );
+    expect(evidenceRes.status).toBe(0);
+    const evidence = parseJsonStdout(evidenceRes.stdout);
+    schemas.handoffEvidenceSchema.parse(evidence);
+    expect(evidence.events.length).toBeGreaterThan(0);
+  }, 30_000);
+
   test('compare --json returns JSON envelope + exit code 2 when prompt is missing', () => {
     const res = runCli(['compare', '--json']);
     expect(res.status).toBe(2);

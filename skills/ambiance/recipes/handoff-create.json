@@ -1,0 +1,20 @@
+{
+  "name": "handoff-create",
+  "description": "Create a compact evidence-linked handoff from a numbered session selection.",
+  "defaults": {
+    "format": "json",
+    "compact": true,
+    "maxTokens": 2000
+  },
+  "command": "handoff",
+  "args": [
+    "create",
+    "${selection}",
+    "--compact",
+    "--list-id",
+    "${listId}",
+    "--json",
+    "--project-path",
+    "${projectPath}"
+  ]
+}

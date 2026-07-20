@@ -1,0 +1,10 @@
+{
+  "name": "handoff-list",
+  "description": "List locally retained Codex and Claude sessions by numbered title.",
+  "defaults": {
+    "format": "json",
+    "limit": 20
+  },
+  "command": "handoff",
+  "args": ["list", "--json", "--project-path", "${projectPath}"]
+}

@@ -177,6 +177,61 @@ const packsTemplateSchema = jsonEnvelopeSchema.extend({
     .passthrough(),
 });
 
+const handoffSessionSchema = z
+  .object({
+    selection: z.number().int().positive(),
+    sessionId: z.string().min(1),
+    source: z.enum(['codex', 'claude']),
+    title: z.string().min(1),
+    sourcePath: z.string().min(1),
+    updatedAt: z.string().min(1),
+    sizeBytes: z.number().nonnegative(),
+  })
+  .passthrough();
+
+const handoffListSchema = jsonEnvelopeSchema.extend({
+  command: z.literal('handoff'),
+  exitCode: z.literal(0),
+  action: z.literal('list'),
+  listId: z.string().min(1),
+  sessions: z.array(handoffSessionSchema),
+});
+
+const handoffCreateSchema = jsonEnvelopeSchema.extend({
+  command: z.literal('handoff'),
+  exitCode: z.literal(0),
+  action: z.literal('create'),
+  handoff: z
+    .object({
+      version: z.literal(1),
+      id: z.string().min(1),
+      mode: z.enum(['compact', 'standard']),
+      maxTokens: z.number().positive(),
+      estimatedTokens: z.number().positive(),
+      sections: z.record(z.any()),
+      repository: z.record(z.any()),
+    })
+    .passthrough(),
+  paths: z.record(z.any()),
+  content: z.string().min(1),
+});
+
+const handoffShowSchema = jsonEnvelopeSchema.extend({
+  command: z.literal('handoff'),
+  exitCode: z.literal(0),
+  action: z.literal('show'),
+  handoff: z.object({ id: z.string().min(1) }).passthrough(),
+  content: z.string().min(1),
+});
+
+const handoffEvidenceSchema = jsonEnvelopeSchema.extend({
+  command: z.literal('handoff'),
+  exitCode: z.literal(0),
+  action: z.literal('evidence'),
+  events: z.array(z.any()),
+  evidenceFile: z.string().min(1),
+});
+
 module.exports = {
   jsonEnvelopeSchema,
   doctorReportSchema,
@@ -196,4 +251,8 @@ module.exports = {
   packsGetSchema,
   packsDeleteSchema,
   packsTemplateSchema,
+  handoffListSchema,
+  handoffCreateSchema,
+  handoffShowSchema,
+  handoffEvidenceSchema,
 };

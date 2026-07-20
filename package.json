@@ -1,6 +1,6 @@
 {
   "name": "@jackjackstudios/ambiance-cli",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Verified, token-budgeted project evidence for coding agents",
   "main": "dist/src/cli.js",
   "types": "dist/src/cli.d.ts",
@@ -40,6 +40,9 @@
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=8.0.0"
+  },
+  "overrides": {
+    "adm-zip": "^0.6.0"
   },
   "scripts": {
     "start": "node dist/src/cli.js --help",

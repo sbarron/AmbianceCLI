@@ -58,6 +58,11 @@
       "json": true
     },
     {
+      "name": "handoff",
+      "description": "Discover Codex/Claude sessions and create compact evidence-linked handoffs",
+      "json": true
+    },
+    {
       "name": "migrate mcp-map",
       "description": "Migration helpers (MCP -> CLI mapping)",
       "json": true

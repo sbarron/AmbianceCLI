@@ -140,7 +140,24 @@ Semantic targets now retain the indexed chunk's actual symbol and line range. Di
 | Error log to likely code | `debug` |
 | Frontend topology | `frontend` |
 | Embedding health or maintenance | `embeddings status`, `check_stale`, or `validate` |
+| Resume work from Codex or Claude | `handoff list`, then `handoff create --compact` |
 | Skill artifact validation | `skill verify` |
+
+## Portable Handoff Workflow
+
+When a source agent is rate-limited or a task must move between models, do not paste an unbounded
+raw transcript. List locally retained sessions, select by numbered title or stable session ID, and
+start with a compact handoff:
+
+```text
+ambiance handoff list --json --project-path <absolute-path>
+ambiance handoff create <selection> --compact --list-id <listId> --json --project-path <absolute-path>
+```
+
+Read `handoff.sections`, `handoff.repository`, and `handoff.warnings` first. Expand only the needed
+evidence with `ambiance handoff evidence <handoff-id> --tests|--kind <kind>|--id <evidence-id> --json`.
+Use `--include-transcript` only when the user explicitly needs a raw portable copy; it may contain
+sensitive material even though likely secret values in normalized handoff evidence are redacted.
 
 ## Stop Conditions
 

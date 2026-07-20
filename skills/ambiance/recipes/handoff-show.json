@@ -1,0 +1,9 @@
+{
+  "name": "handoff-show",
+  "description": "Load a stored portable handoff without reopening its source transcript.",
+  "defaults": {
+    "format": "json"
+  },
+  "command": "handoff",
+  "args": ["show", "${handoffId}", "--json"]
+}
