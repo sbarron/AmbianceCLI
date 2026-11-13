@@ -14,13 +14,11 @@ import {
   hashText,
   listJsonlFiles,
   pathsMatch,
-  resolveAmbianceHome,
+  resolveHandoffCacheDir,
 } from './utils';
 
 function resolveCatalogPath(): string {
-  const override = process.env.AMBIANCE_HANDOFF_CACHE_DIR?.trim();
-  const cacheDir = override ? path.resolve(override) : path.join(resolveAmbianceHome(), 'cache');
-  return path.join(cacheDir, 'handoff-catalog-v1.json');
+  return path.join(resolveHandoffCacheDir(), 'handoff-catalog-v1.json');
 }
 
 function readCatalog(): SessionCatalogV1 {
@@ -29,7 +27,7 @@ function readCatalog(): SessionCatalogV1 {
     const parsed = JSON.parse(fs.readFileSync(catalogPath, 'utf8')) as SessionCatalogV1;
     if (
       parsed.version === 1 &&
-      parsed.inspectorVersion === 2 &&
+      parsed.inspectorVersion === 3 &&
       parsed.entries &&
       typeof parsed.entries === 'object'
     )
@@ -37,7 +35,7 @@ function readCatalog(): SessionCatalogV1 {
   } catch {
     // Missing or invalid caches are safely rebuilt from source files.
   }
-  return { version: 1, inspectorVersion: 2, updatedAt: new Date(0).toISOString(), entries: {} };
+  return { version: 1, inspectorVersion: 3, updatedAt: new Date(0).toISOString(), entries: {} };
 }
 
 function cacheKey(source: HandoffSource, sourcePath: string): string {
@@ -49,7 +47,8 @@ function refreshAdapterEntries(
   catalog: SessionCatalogV1,
   source: HandoffSource,
   root: string,
-  inspect: (filePath: string) => SessionSummary | undefined
+  inspect: (filePath: string) => SessionSummary | undefined,
+  enrich?: (session: SessionSummary) => SessionSummary
 ): void {
   const files = listJsonlFiles(root);
   const currentKeys = new Set<string>();
@@ -63,7 +62,10 @@ function refreshAdapterEntries(
     const key = cacheKey(source, filePath);
     currentKeys.add(key);
     const cached = catalog.entries[key];
-    if (cached && cached.sizeBytes === stat.size && cached.mtimeMs === stat.mtimeMs) continue;
+    if (cached && cached.sizeBytes === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      if (enrich) cached.summary = enrich(cached.summary);
+      continue;
+    }
     try {
       const summary = inspect(filePath);
       if (!summary) continue;
@@ -90,12 +92,17 @@ export function listSessions(args: {
   sources?: HandoffSource[];
   allProjects?: boolean;
   limit?: number;
+  includeCurrent?: boolean;
 }): HandoffListResult {
   const adapters = getAdapters(args.sources);
   const catalog = readCatalog();
   for (const adapter of adapters) {
-    refreshAdapterEntries(catalog, adapter.source, adapter.resolveRoot(), filePath =>
-      adapter.inspect(filePath)
+    refreshAdapterEntries(
+      catalog,
+      adapter.source,
+      adapter.resolveRoot(),
+      filePath => adapter.inspect(filePath),
+      adapter.enrichSummary ? session => adapter.enrichSummary!(session) : undefined
     );
   }
   catalog.updatedAt = new Date().toISOString();
@@ -108,6 +115,13 @@ export function listSessions(args: {
     .filter(
       session =>
         args.allProjects === true || !args.projectPath || pathsMatch(session.cwd, args.projectPath)
+    )
+    .filter(
+      session =>
+        args.includeCurrent === true ||
+        session.source !== 'codex' ||
+        !process.env.CODEX_THREAD_ID ||
+        session.sessionId !== process.env.CODEX_THREAD_ID
     )
     .sort((left, right) => {
       const byTime = right.updatedAt.localeCompare(left.updatedAt);
@@ -126,7 +140,7 @@ export function listSessions(args: {
   return {
     sessions: filtered,
     listId,
-    projectPath: args.projectPath,
+    projectPath: args.allProjects === true ? undefined : args.projectPath,
     scannedSources: adapters.map(adapter => adapter.source),
   };
 }
@@ -136,6 +150,7 @@ export function resolveSessionSelection(args: {
   sources?: HandoffSource[];
   allProjects?: boolean;
   limit?: number;
+  includeCurrent?: boolean;
   selection?: number;
   sessionId?: string;
   listId?: string;

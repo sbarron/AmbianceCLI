@@ -9,18 +9,20 @@ import { logger } from '../../utils/logger';
 
 // Mock better-sqlite3 with synchronous API
 jest.mock('better-sqlite3', () => {
-  const mockStatement = {
-    run: jest.fn().mockReturnValue({ changes: 1 }),
-    all: jest.fn().mockReturnValue([]),
-    get: jest.fn().mockReturnValue(null),
-    finalize: jest.fn(),
-  };
+  return jest.fn().mockImplementation(() => {
+    const mockStatement = {
+      run: jest.fn().mockReturnValue({ changes: 1 }),
+      all: jest.fn().mockReturnValue([]),
+      get: jest.fn().mockReturnValue(null),
+      finalize: jest.fn(),
+    };
 
-  return jest.fn().mockImplementation(() => ({
-    exec: jest.fn(),
-    prepare: jest.fn().mockReturnValue(mockStatement),
-    close: jest.fn(),
-  }));
+    return {
+      exec: jest.fn(),
+      prepare: jest.fn().mockReturnValue(mockStatement),
+      close: jest.fn(),
+    };
+  });
 });
 
 // Mock fs
@@ -34,14 +36,6 @@ jest.mock('path', () => ({
   resolve: jest.fn((...args) => args.join('/')),
   dirname: jest.fn(path => path.split('/').slice(0, -1).join('/')),
   join: jest.fn((...args) => args.join('/')),
-}));
-
-// Mock crypto
-jest.mock('crypto', () => ({
-  createHash: jest.fn().mockImplementation(() => ({
-    update: jest.fn().mockReturnThis(),
-    digest: jest.fn().mockReturnValue('mock-hash'),
-  })),
 }));
 
 // Mock logger
@@ -171,7 +165,8 @@ describe('LocalEmbeddingStorage', () => {
         'float32',
         mockEmbeddingChunk.metadata.embeddingDimensions,
         mockEmbeddingChunk.metadata.embeddingProvider,
-        mockEmbeddingChunk.hash
+        mockEmbeddingChunk.hash,
+        null
       );
 
       expect(logger.debug).toHaveBeenCalledWith(
@@ -194,6 +189,7 @@ describe('LocalEmbeddingStorage', () => {
         },
       };
 
+      mockStatement.run.mockClear();
       await storage.storeEmbedding(chunkWithoutMetadata);
 
       const callArgs = mockStatement.run.mock.calls[0];
@@ -286,10 +282,7 @@ describe('LocalEmbeddingStorage', () => {
       const mockStmt = mockDb.prepare.mock.results.find((result: any) => result.value.all)?.value;
 
       if (mockStmt) {
-        mockStmt.all.mockImplementation(
-          (params: any, callback: (error: Error | null, rows: any[]) => void) =>
-            callback(null, mockRows)
-        );
+        mockStmt.all.mockReturnValue(mockRows);
       }
 
       const embeddings = await storage.getProjectEmbeddings('test-project');
@@ -389,27 +382,20 @@ describe('LocalEmbeddingStorage', () => {
       const errorStorage = new LocalEmbeddingStorage();
 
       // Mock the Database constructor to throw an error
-      const originalDatabase = require('sqlite3').Database;
-      require('sqlite3').Database = jest
-        .fn()
-        .mockImplementation((dbPath: string, callback: (err: Error | null) => void) => {
-          setTimeout(() => callback(new Error('DB Error')), 1);
-          return null;
-        });
+      require('better-sqlite3').mockImplementationOnce(() => {
+        throw new Error('DB Error');
+      });
 
       await expect(errorStorage.initializeDatabase()).rejects.toThrow('DB Error');
-
-      // Restore original Database
-      require('sqlite3').Database = originalDatabase;
     });
 
     test('should handle storage errors', async () => {
       await storage.initializeDatabase();
 
       const mockStmt = mockDb.prepare.mock.results[0].value;
-      mockStmt.run.mockImplementation((params: any[], callback: (error: Error | null) => void) =>
-        callback(new Error('Storage Error'))
-      );
+      mockStmt.run.mockImplementation(() => {
+        throw new Error('Storage Error');
+      });
 
       await expect(storage.storeEmbedding(mockEmbeddingChunk)).rejects.toThrow('Storage Error');
     });
@@ -420,10 +406,9 @@ describe('LocalEmbeddingStorage', () => {
       const mockStmt = mockDb.prepare.mock.results.find((result: any) => result.value.all)?.value;
 
       if (mockStmt) {
-        mockStmt.all.mockImplementation(
-          (params: any[], callback: (error: Error | null, rows: any[]) => void) =>
-            callback(new Error('Retrieval Error'), [])
-        );
+        mockStmt.all.mockImplementation(() => {
+          throw new Error('Retrieval Error');
+        });
       }
 
       await expect(storage.getProjectEmbeddings('test-project')).rejects.toThrow('Retrieval Error');
@@ -443,9 +428,9 @@ describe('LocalEmbeddingStorage', () => {
       await storage.initializeDatabase();
 
       // Mock close to throw an error
-      mockDb.close.mockImplementation((callback: (error: Error | null) => void) =>
-        callback(new Error('Close Error'))
-      );
+      mockDb.close.mockImplementation(() => {
+        throw new Error('Close Error');
+      });
 
       // Should not throw
       await expect(storage.close()).resolves.toBeUndefined();

@@ -201,7 +201,7 @@ return runAmbiance([
   '--project-path',
   './',
   '--file-pattern',
-  'src/auth/**/*.ts'
+  'src/auth'
 ]);
 ```
 
@@ -275,7 +275,7 @@ function findWithConstraints(basePattern, maxResults = 50) {
       '--project-path',
       './',
       '--file-pattern',
-      'src/auth/**/*.ts'
+      'src/auth'
     ]);
   }
 
@@ -335,6 +335,13 @@ function validateProjectType(hints) {
 3. **First run after installation**:
    - **Expected**: Initial embedding creation is slow
    - **Resolution**: Wait for completion, subsequent runs are fast
+
+4. **`handoff create` exceeds 10 seconds or starts embedding maintenance**:
+   - **Expected**: Handoff recovery does not create, refresh, or query project embeddings
+   - **Resolution**: Update the Ambiance CLI and resync the installed skill; do not extend the timeout
+     or launch duplicate retries
+   - If the completed handoff lacks symbol-level code evidence, run one bounded
+     `context "<identifiers>" --no-embeddings --format index` query from its relevant files
 
 **Optimization pattern**:
 ```javascript

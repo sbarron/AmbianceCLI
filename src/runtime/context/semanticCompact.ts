@@ -2,6 +2,7 @@
  * @fileOverview: Runtime handler for local semantic compaction (local_context)
  */
 
+import { formatEnhancedContextOutput } from '../../tools/localTools/formatters/enhancedContextFormatter';
 import { SemanticCompactor } from '../../core/compactor/semanticCompactor';
 import {
   enhancedSemanticCompactor,
@@ -48,7 +49,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       const p = validateAndResolvePath(args.projectPath);
       const f = args?.format || 'enhanced';
       const s = args?.autoSync ? 'sync' : 'nosync';
-      return `${path.resolve(p)}::${f}::${q}::${s}`;
+      const e = args?.disableEmbeddings === true ? 'embeddings-off' : 'embeddings-auto';
+      return `${path.resolve(p)}::${f}::${q}::${s}::${e}`;
     } catch {
       return `default-key`;
     }
@@ -82,6 +84,9 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         projectPath,
         folderPath,
         useEmbeddings = false,
+        // Internal bounded-call escape hatch. Unlike useEmbeddings=false, this
+        // also prevents auto-enabling an existing project embedding index.
+        disableEmbeddings = false,
         embeddingSimilarityThreshold = 0.2,
         showmetadata = false,
       } = args;
@@ -95,10 +100,15 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       // Embedding lifecycle: ALWAYS ensure embeddings exist & are fresh
       // before running any context query.  This runs regardless of flags.
       // ──────────────────────────────────────────────────────────────────
-      let embeddingsEnabled = process.env.USE_LOCAL_EMBEDDINGS === 'true' || useEmbeddings;
+      let embeddingsEnabled =
+        !disableEmbeddings && (process.env.USE_LOCAL_EMBEDDINGS === 'true' || useEmbeddings);
 
       // Auto-enable embeddings if they exist for the project, unless explicitly disabled
-      if (!embeddingsEnabled && process.env.USE_LOCAL_EMBEDDINGS !== 'false') {
+      if (
+        !disableEmbeddings &&
+        !embeddingsEnabled &&
+        process.env.USE_LOCAL_EMBEDDINGS !== 'false'
+      ) {
         try {
           const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
           const { ProjectIdentifier } = await import('../../local/projectIdentifier');
@@ -377,7 +387,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
           });
 
           if (enhancedResult.success) {
-            const content = formatEnhancedContextOutput(enhancedResult, query, maxTokens, format);
+            const content = formatEnhancedContextOutput(enhancedResult, query, maxTokens, format, resolvedProjectPath);
             return {
               success: true,
               content,
@@ -385,6 +395,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
               metadata: {
                 ...enhancedResult.metadata,
                 filesProcessed: enhancedResult.metadata.filesScanned,
+                renderedTokens: estimateTokensShared(content),
               },
               usage: `Enhanced context analysis: ${enhancedResult.metadata.bundleTokens} tokens in ${enhancedResult.jumpTargets.length} locations${embeddingsUsed ? ' (embedding-enhanced)' : ''}`,
               enhanced: true,
@@ -637,112 +648,4 @@ export async function handleSemanticCompact(args: any): Promise<any> {
   } finally {
     inFlightRequests.delete(singleFlightKey);
   }
-}
-
-/**
- * Format enhanced context output for display
- */
-function formatEnhancedContextOutput(
-  result: LocalContextResponse,
-  query?: string,
-  maxTokens?: number,
-  format?: string
-): string {
-  const sections: string[] = [];
-
-  // Answer Draft Section
-  sections.push('## Query Analysis\n');
-  if (query) {
-    sections.push(`**Semantic Search Context For:** ${query}\n`);
-  }
-  sections.push(result.answerDraft);
-  sections.push('');
-
-  // Jump Targets Section
-  if (result.jumpTargets.length > 0) {
-    sections.push('## Key Locations\n');
-
-    // Group targets by file
-    const targetsByFile = new Map<string, typeof result.jumpTargets>();
-    result.jumpTargets.forEach(target => {
-      const fileTargets = targetsByFile.get(target.file) || [];
-      fileTargets.push(target);
-      targetsByFile.set(target.file, fileTargets);
-    });
-
-    for (const [file, targets] of targetsByFile.entries()) {
-      sections.push(`### 📄 ${file}`);
-
-      const symbolParts = targets.map(t => {
-        const lineInfo = t.start && t.end ? ` (L${t.start}-L${t.end})` : '';
-        return `**${t.symbol}**${lineInfo}`;
-      });
-      sections.push(`- **Symbols**: ${symbolParts.join(', ')}`);
-
-      const roles = Array.from(new Set(targets.map(t => t.role).filter(Boolean)));
-      const avgConf = Math.round(
-        (targets.reduce((sum, t) => sum + t.confidence, 0) / targets.length) * 100
-      );
-      const roleStr = roles.length > 0 ? `[${roles.join(', ')}] ` : '';
-
-      const allWhys = targets.flatMap(t => t.why || []);
-      const uniqueWhys = Array.from(new Set(allWhys));
-      const whyStr = uniqueWhys.length > 0 ? ` 💡 ${uniqueWhys.join(' | ')}` : '';
-
-      sections.push(`- **Relevance**: ${roleStr}🔍 ~${avgConf}%${whyStr}`);
-      sections.push('');
-    }
-  }
-
-  // Mini Bundle Section
-  if (result.miniBundle.length > 0 && format !== 'index') {
-    sections.push('## Code Snippets\n');
-    result.miniBundle.forEach((snippet, index) => {
-      sections.push(`### ${index + 1}. ${snippet.symbol} (${snippet.file})\n`);
-      sections.push('```typescript');
-      sections.push(snippet.snippet);
-      sections.push('```\n');
-    });
-  }
-
-  // Next Actions Section
-  if (result.next) {
-    sections.push('## Next Actions\n');
-    sections.push(`**Mode**: ${result.next.mode}`);
-    sections.push('');
-
-    if (result.next.openFiles.length > 0) {
-      sections.push('**Files to examine**:');
-      result.next.openFiles.forEach(file => {
-        sections.push(`- ${file}`);
-      });
-      sections.push('');
-    }
-
-    if (result.next.checks.length > 0) {
-      sections.push('**Verification commands**:');
-      result.next.checks.forEach(check => {
-        sections.push(`- \`${check}\``);
-      });
-      sections.push('');
-    }
-  }
-
-  // Evidence Section (if available)
-  if (result.evidence && result.evidence.length > 0) {
-    sections.push('## Evidence\n');
-    result.evidence.forEach(evidence => {
-      sections.push(`- ${evidence}`);
-    });
-    sections.push('');
-  }
-
-  // Metadata Section
-  sections.push('---\n');
-  sections.push(
-    `**Analysis Stats**: ${result.metadata.filesScanned} files scanned, ${result.metadata.symbolsConsidered} symbols considered, ${result.metadata.bundleTokens} tokens in output, processed in ${result.metadata.processingTimeMs}ms`
-  );
-
-  const full = sections.join('\n');
-  return typeof maxTokens === 'number' ? truncateToTokens(full, maxTokens) : full;
 }

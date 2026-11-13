@@ -8,7 +8,17 @@ Instead of grepping through hundreds of files, ask a natural language question a
 
 ![ambiance context demo](https://raw.githubusercontent.com/sbarron/AmbianceCLI/master/demo/context-scenario-c-demo.gif)
 
+## 0.6.0 update
+
+- Reduce local embedding work by deduplicating cold inputs and reusing unchanged vectors.
+- Keep indexes current across file additions, renames and deletions; recover interrupted writes and report inference failures.
+- Fix project-relative imports and summary paths, plus watcher retries and shutdown cleanup.
+
+The candidate passes 34 installed-package lifecycle checks locally. See the [acceptance report](docs/release-acceptance-2026-11-13.md) for results and pending CI validation.
+
 ## Install
+
+Requires Node.js 22 or newer. Use the latest patched Node.js 22 or 24 LTS release.
 
 ```bash
 npm install -g @jackjackstudios/ambiance-cli
@@ -32,17 +42,24 @@ ambiance skill verify --json
 ## More Demos
 
 ### `ambiance handoff` — Portable agent continuity
-Discover locally retained Codex and Claude sessions by numbered title, then create a compact,
-evidence-linked handoff that reconciles the conversation with the repository's current state.
+Discover locally retained Codex and Claude sessions by numbered provider title, or search normalized
+conversation text with local BM25 ranking. Then create a compact, evidence-linked handoff that
+reconciles the selected conversation with the repository's current state.
 
 ```bash
-ambiance handoff
+ambiance handoff list --all-projects --limit 10
+ambiance handoff search "Temporal cancellation" --all-projects --limit 10
 ambiance handoff create 2 --compact
+ambiance handoff create --session-id <session-id> --compact --all-projects
 ambiance handoff evidence <handoff-id> --tests --json
 ```
 
 Handoffs are stored outside the repository under `~/.ambiance/handoffs` by default. Source
 transcripts are read-only and are copied only when `--include-transcript` is explicitly supplied.
+Search uses a redacted, reasoning-free incremental FTS cache under `~/.ambiance/cache`.
+Handoff creation does not create, refresh, or query the project embedding index. If the result warns
+that symbol-level code evidence was unavailable, use its referenced files and exact identifiers in
+one bounded `ambiance context --no-embeddings --format index` query.
 
 ### `ambiance hints` — Instant project orientation
 One command gives any agent or developer a full orientation to an unfamiliar codebase: architecture patterns, key folders, entry points, and top functions.
@@ -77,7 +94,7 @@ All commands support JSON mode via `--json`.
 - `ambiance frontend --json --project-path <path>`
 - `ambiance embeddings <action> --json --project-path <path>`
 - `ambiance packs <create|list|get|delete|template|ui> --json`
-- `ambiance handoff [list|create|show|evidence] --json`
+- `ambiance handoff [list|search|create|show|evidence] --json`
 - `ambiance compare --prompt "<prompt>" --json`
 
 ## Agent Skill Workflows
@@ -99,6 +116,9 @@ MCP remains available as a compatibility path, but CLI is now the primary interf
 - Prefer `--json` for machine parsing.
 - Non-zero exit codes are returned for usage/runtime failures.
 - Use explicit `--project-path` for deterministic runs.
+
+Local embedding refreshes reuse unchanged inference inputs and group batches by length.
+See [local embedding refresh](docs/local-embedding-efficiency.md) for cache compatibility and rebuild limits.
 
 ## Development
 

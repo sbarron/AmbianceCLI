@@ -12,6 +12,7 @@ import { logger } from '../utils/logger';
 import { LocalEmbeddingGenerator } from './embeddingGenerator';
 import { LocalEmbeddingStorage } from './embeddingStorage';
 import { ProjectIdentifier } from './projectIdentifier';
+import { DEFAULT_EMBEDDING_CHUNK_SIZE } from './embeddingDefaults';
 
 export interface GenerationStatus {
   projectId: string;
@@ -159,7 +160,7 @@ export class BackgroundEmbeddingManager {
       .generateProjectEmbeddings(projectId, projectPath, {
         batchSize: options?.batchSize || 10,
         rateLimit: options?.rateLimit || 1000,
-        maxChunkSize: 1500,
+        maxChunkSize: DEFAULT_EMBEDDING_CHUNK_SIZE,
         filePatterns: [
           '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
         ],

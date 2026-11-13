@@ -1,0 +1,18 @@
+{
+  "name": "handoff-search",
+  "description": "Rank locally retained Codex and Claude sessions by conversation keywords.",
+  "defaults": {
+    "format": "json",
+    "limit": 10
+  },
+  "command": "handoff",
+  "args": [
+    "search",
+    "${query}",
+    "--limit",
+    "${limit}",
+    "--json",
+    "--project-path",
+    "${projectPath}"
+  ]
+}

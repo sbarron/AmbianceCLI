@@ -26,6 +26,7 @@ import { loadIgnorePatterns } from './projectIdentifier';
 import { apiClient } from '../client/apiClient';
 import { LocalEmbeddingGenerator } from './embeddingGenerator';
 import { logger } from '../utils/logger';
+import { DEFAULT_EMBEDDING_CHUNK_SIZE } from './embeddingDefaults';
 
 interface IgnorePatterns {
   gitignore: string[];
@@ -71,6 +72,7 @@ export class AutomaticIndexer {
   private staleCheckIntervals: Map<string, NodeJS.Timeout>; // Periodic stale file checks per project
   private fileHashes: Map<string, string>; // Track file content hashes to detect actual changes
   private processingQueue: Map<string, Promise<void>>; // Prevent concurrent processing per project
+  private debounceTimers = new Map<string, { project: string; timer: NodeJS.Timeout }>();
 
   private constructor() {
     this.projectManager = new LocalProjectManager();
@@ -162,7 +164,7 @@ export class AutomaticIndexer {
 
     try {
       // Start indexing session in cloud if API key is valid
-      if ((await this.hasValidAPIKey()) && !options.skipCloud) {
+      if (!options.skipCloud && (await this.hasValidAPIKey())) {
         try {
           const startIndexingRequest = {
             projectPath: absolutePath,
@@ -203,7 +205,11 @@ export class AutomaticIndexer {
         logger.info('Force indexing enabled - will re-index all files');
       } else {
         // Filter out unchanged files
-        const changedFiles = await this.filterChangedFiles(absolutePath, filesToIndex);
+        const changedFiles = await this.filterChangedFiles(
+          absolutePath,
+          filesToIndex,
+          options.skipCloud
+        );
         filesToIndex.splice(0, filesToIndex.length, ...changedFiles);
         logger.info(`📝 ${filesToIndex.length} files have changes`);
       }
@@ -243,6 +249,9 @@ export class AutomaticIndexer {
       }
 
       session.status = 'completed';
+      if (options.skipCloud) {
+        for (const file of filesToIndex) this.fileHashes.set(file, this.hashFile(file));
+      }
       logger.info(
         `✅ Indexing completed: ${session.filesProcessed} files, ${session.chunksCreated} chunks, ${session.symbolsExtracted} symbols`
       );
@@ -258,7 +267,9 @@ export class AutomaticIndexer {
       }
     } finally {
       // Update project's last indexed time
-      await this.updateProjectLastIndexed(absolutePath);
+      if (session.status === 'completed' && session.errors.length === 0) {
+        await this.updateProjectLastIndexed(absolutePath);
+      }
     }
 
     return session;
@@ -293,7 +304,7 @@ export class AutomaticIndexer {
 
       // Reset project status
       await this.resetProjectStatus(absolutePath);
-      logger.info('✅ Successfully reset indexes for project: /test/project');
+      logger.info(`✅ Successfully reset indexes for project: ${absolutePath}`);
       return true;
     } catch (error) {
       logger.error('❌ Failed to reset project indexes:', {
@@ -494,12 +505,13 @@ export class AutomaticIndexer {
         const processingKey = `${projectKey}:${filename}`;
 
         // Clear existing debounce for this specific file
-        clearTimeout((this as any)[`debounce_${processingKey}`]);
-        (this as any)[`debounce_${processingKey}`] = setTimeout(async () => {
+        clearTimeout(this.debounceTimers.get(processingKey)?.timer);
+        const timer = setTimeout(async () => {
+          this.debounceTimers.delete(processingKey);
           logger.debug(`⏰ Processing queued for: ${filename}`);
           await this.queueProcessing(projectKey, async () => {
             try {
-              if (fs.existsSync(filePath)) {
+              {
                 logger.info(
                   `📝 File content changed: ${filename}, triggering incremental embedding update`
                 );
@@ -511,11 +523,19 @@ export class AutomaticIndexer {
                   const { LocalEmbeddingGenerator } = await import('./embeddingGenerator');
                   const embeddingGenerator = new LocalEmbeddingGenerator();
 
-                  await embeddingGenerator.updateProjectEmbeddings(projectInfo.id, absolutePath, {
-                    files: [filename], // Only update the changed file
-                    batchSize: 1, // Process one file at a time to reduce database load
-                    rateLimit: 1000, // Slower rate limiting
-                  });
+                  const indexedHash = await this.getFileHash(filePath);
+                  const update = await embeddingGenerator.updateProjectEmbeddings(
+                    projectInfo.id,
+                    absolutePath,
+                    {
+                      files: [filename], // Only update the changed file
+                      batchSize: 1, // Process one file at a time to reduce database load
+                      rateLimit: 1000, // Slower rate limiting
+                    }
+                  );
+                  if (update.errors?.length) throw new Error(update.errors.join('; '));
+                  if (indexedHash) this.fileHashes.set(filePath, indexedHash);
+                  else this.fileHashes.delete(filePath);
 
                   logger.info(`✅ Incremental embedding update completed for: ${filename}`);
                 } else {
@@ -529,6 +549,7 @@ export class AutomaticIndexer {
             }
           }); // Close queueProcessing
         }, options?.debounceMs ?? 300000); // 5 minute debounce - gives more time for batching multiple changes
+        this.debounceTimers.set(processingKey, { project: absolutePath, timer });
       });
 
       // Initialize file hashes for existing files to avoid processing unchanged files
@@ -542,7 +563,7 @@ export class AutomaticIndexer {
       this.startPeriodicStaleCheck(absolutePath);
       logger.info(`✅ Periodic stale check started for ${absolutePath}`);
 
-      logger.info('Started watching for file changes: /test/project');
+      logger.info(`Started watching for file changes: ${absolutePath}`);
     } catch (error) {
       logger.error(
         'Failed to start watching:',
@@ -609,6 +630,12 @@ export class AutomaticIndexer {
    */
   async stopWatching(projectPath: string): Promise<void> {
     const absolutePath = path.resolve(projectPath);
+    for (const [key, entry] of this.debounceTimers) {
+      if (entry.project === absolutePath) {
+        clearTimeout(entry.timer);
+        this.debounceTimers.delete(key);
+      }
+    }
     const watcher = this.watchedProjects.get(absolutePath);
 
     if (watcher) {
@@ -1216,13 +1243,10 @@ export class AutomaticIndexer {
    */
   private async hasFileChanged(filePath: string): Promise<boolean> {
     const currentHash = await this.getFileHash(filePath);
-    if (!currentHash) return false;
+    if (!currentHash) return this.fileHashes.has(filePath);
 
     const previousHash = this.fileHashes.get(filePath);
     const hasChanged = previousHash !== currentHash;
-
-    // Update stored hash
-    this.fileHashes.set(filePath, currentHash);
 
     return hasChanged;
   }
@@ -1325,42 +1349,30 @@ export class AutomaticIndexer {
   }
 
   private async queueProcessing(projectKey: string, operation: () => Promise<void>): Promise<void> {
-    // Wait for any existing processing to complete, then run this operation
-    const existingPromise = this.processingQueue.get(projectKey);
-    if (existingPromise) {
-      logger.debug(`⏳ Waiting for existing processing to complete for project: ${projectKey}`);
-      await existingPromise;
+    const previous = this.processingQueue.get(projectKey) || Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    this.processingQueue.set(projectKey, current);
+    try {
+      await current;
+    } finally {
+      if (this.processingQueue.get(projectKey) === current) this.processingQueue.delete(projectKey);
     }
-
-    // Create a new promise for this operation
-    const operationPromise = this.createQueuedOperation(projectKey, operation);
-
-    // Store the promise
-    this.processingQueue.set(projectKey, operationPromise);
-
-    // Wait for this operation to complete
-    await operationPromise;
   }
 
-  private createQueuedOperation(projectKey: string, operation: () => Promise<void>): Promise<void> {
-    return (async () => {
-      try {
-        await operation();
-      } finally {
-        // Clean up the queue entry
-        this.processingQueue.delete(projectKey);
-      }
-    })();
-  }
-
-  private async filterChangedFiles(projectPath: string, files: string[]): Promise<string[]> {
+  private async filterChangedFiles(
+    projectPath: string,
+    files: string[],
+    skipCloud = false
+  ): Promise<string[]> {
     const changedFiles: string[] = [];
 
     for (const file of files) {
       try {
         const stat = fs.statSync(file);
         const currentHash = this.hashFile(file);
-        const lastHash = await this.getLastFileHash(projectPath, file);
+        const lastHash = skipCloud
+          ? this.fileHashes.get(file)
+          : await this.getLastFileHash(projectPath, file);
 
         if (!lastHash || currentHash !== lastHash) {
           changedFiles.push(file);
@@ -1420,7 +1432,7 @@ export class AutomaticIndexer {
         session.filesProcessed++;
 
         // Store file hash for change detection
-        await this.storeFileHash(projectPath, file, this.hashFile(file));
+        if (!options.skipCloud) await this.storeFileHash(projectPath, file, this.hashFile(file));
 
         if (session.filesProcessed % 10 === 0) {
           logger.info(`📊 Progress: ${session.filesProcessed}/${session.filesFound} files`);
@@ -1629,7 +1641,7 @@ export class AutomaticIndexer {
         {
           batchSize: 10,
           rateLimit: 1000,
-          maxChunkSize: 1500,
+          maxChunkSize: DEFAULT_EMBEDDING_CHUNK_SIZE,
           filePatterns: [
             '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
           ],
@@ -1638,6 +1650,8 @@ export class AutomaticIndexer {
 
       // Update session with embedding results
       session.embeddings = progress.embeddings;
+      session.errors.push(...progress.errors);
+      if (progress.errors.length) throw new Error(progress.errors.join('; '));
 
       logger.info('✅ Local embedding generation completed', {
         projectId: projectInfo.id,
@@ -1661,10 +1675,11 @@ export class AutomaticIndexer {
         error: error instanceof Error ? error.message : String(error),
       });
 
-      // Don't throw - let the session complete with warning
+      // Surface the failure so callers cannot mark an unsuccessful index complete.
       session.errors.push(
         `Local embedding generation failed: ${error instanceof Error ? error.message : String(error)}`
       );
+      throw error;
     }
   }
 }

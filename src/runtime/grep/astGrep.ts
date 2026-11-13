@@ -1,3 +1,4 @@
+import { resolveAstGrepBinary } from './astGrepBinary';
 /**
  * @fileOverview: AST-Grep integration for structural code search and transformation
  * @module: AstGrep
@@ -117,8 +118,8 @@ npx ast-grep --pattern "def " --lang py
 # Python classes
 npx ast-grep --pattern "class $NAME:" --lang py
 
-# With file filtering (recommended for large projects)
-npx ast-grep --pattern "def " --lang py src/**/*.py
+# With literal directory filtering (recommended for large projects)
+npx ast-grep --pattern "def " --lang py src
 
 # JSON output
 npx ast-grep --pattern "class $NAME:" --lang py --json=stream
@@ -142,9 +143,10 @@ npx ast-grep --help
 - For additional exclusions, configure .gitignore in your project
 
 **Tips for Large Projects (like D:\\Dev\\SWE-agent):**
-- Use filePattern to search specific directories: "src/**/*.py"
+- Use filePattern with a literal relative file or directory: "src" or "src/server.ts"
+- Wildcard globs are not expanded; use host text/content search when globbed lexical search is needed
 - Add large directories to .gitignore: node_modules/, tests/, docs/, etc.
-- Consider CLI usage for better performance: npx ast-grep --pattern "import json" --lang py src/**/*.py
+- Consider CLI usage for better performance: npx ast-grep --pattern "import json" --lang py src
 `,
   inputSchema: {
     type: 'object',
@@ -198,7 +200,7 @@ npx ast-grep --help
       filePattern: {
         type: 'string',
         description:
-          'Specific directory or file path to search within the project (e.g., "src", "lib", "*.py", "src/**/*.ts"). **RECOMMENDED for large projects** - if not provided, searches entire project respecting .gitignore. Use wildcards like "src/**/*.py" to search recursively in specific directories. This can dramatically improve performance on large codebases.',
+          'Literal relative directory or file path to search within the project (e.g., "src", "lib", "src/server.ts"). Wildcard globs are not expanded. If omitted, searches the entire project while respecting .gitignore.',
       },
       maxMatches: {
         type: 'number',
@@ -240,6 +242,26 @@ interface PatternValidationResult {
   error?: string;
   suggestions?: string[];
   warning?: string;
+}
+
+export function validateAstGrepFilePattern(filePattern: unknown): PatternValidationResult {
+  if (filePattern === undefined || filePattern === null || filePattern === '') {
+    return { isValid: true };
+  }
+  if (typeof filePattern !== 'string') {
+    return { isValid: false, error: '--file-pattern must be a relative file or directory path' };
+  }
+  if (/[*?\[\]]/.test(filePattern)) {
+    return {
+      isValid: false,
+      error: '--file-pattern does not expand wildcard globs',
+      suggestions: [
+        'Pass a literal relative file or directory such as "src" or "src/server.ts"',
+        'Use the host text/content search tool when wildcard lexical search is required',
+      ],
+    };
+  }
+  return { isValid: true };
 }
 
 const AST_GREP_GENERAL_EXAMPLES = [
@@ -302,7 +324,7 @@ function buildPatternValidationMessage(
     'Working examples:',
     ...examples.map(e => `- ${e}`),
     '',
-    'Tip: Add --file-pattern "src/**/*.ts" while iterating to validate patterns quickly.',
+    'Tip: Add a literal scope such as --file-pattern "src" while iterating.',
   ];
 
   if (validation.warning) {
@@ -527,6 +549,18 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
   const startTime = Date.now();
 
   try {
+    const filePatternValidation = validateAstGrepFilePattern(args.filePattern);
+    if (!filePatternValidation.isValid) {
+      throw new Error(
+        [
+          filePatternValidation.error,
+          ...(filePatternValidation.suggestions || []).map(item => `- ${item}`),
+        ]
+          .filter(Boolean)
+          .join('\n')
+      );
+    }
+
     // Support rule-based execution path in addition to pattern
     const hasRuleInput = !!(args.rulePath || args.ruleYaml || args.ruleJson);
     let pattern: string | undefined;
@@ -915,6 +949,11 @@ export async function executeAstGrep(options: {
     const cliArgs: string[] = [];
 
     try {
+      const filePatternValidation = validateAstGrepFilePattern(options.filePattern);
+      if (!filePatternValidation.isValid) {
+        throw new Error(filePatternValidation.error);
+      }
+
       // Use rule file if provided; otherwise fall back to pattern
       if (options.ruleFilePath) {
         logger.debug('Using ast-grep rule file', { ruleFilePath: options.ruleFilePath });
@@ -963,6 +1002,8 @@ export async function executeAstGrep(options: {
         cliArgs.push('--no-ignore', 'vcs');
       }
 
+      // A literal path beginning with '-' must never become an ast-grep option.
+      cliArgs.push('--');
       if (options.filePattern) {
         cliArgs.push(options.filePattern);
       } else {
@@ -1004,138 +1045,24 @@ export async function executeAstGrep(options: {
       }
 
       logger.debug('ast-grep command details', {
-        command: 'npx ast-grep',
+        command: resolveAstGrepBinary(),
         args: cliArgs,
         cwd: options.projectPath,
-        fullCommand: 'npx ast-grep ' + cliArgs.join(' '),
       });
 
-      // Log the command being executed
-      const fullCommand = 'npx ast-grep ' + cliArgs.join(' ');
-      logger.debug('Executing ast-grep command:', { command: fullCommand });
-
-      let astGrep: ReturnType<typeof spawn> | null = null;
-      let executionMethod = 'unknown';
-
-      const localBinary = findLocalAstGrepBinary();
-      if (localBinary) {
-        try {
-          const useShell = process.platform === 'win32' && localBinary.endsWith('.cmd');
-          astGrep = spawn(localBinary, cliArgs, {
-            cwd: options.projectPath,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            shell: useShell,
-          });
-          executionMethod = 'local-binary';
-          logger.debug('Using local ast-grep binary', { binary: localBinary, useShell });
-        } catch (localBinaryError) {
-          logger.debug('Failed to spawn local binary, falling back to npx', {
-            error:
-              localBinaryError instanceof Error
-                ? localBinaryError.message
-                : String(localBinaryError),
-          });
-        }
-      }
-
-      if (!astGrep) {
-        const approaches = [
-          {
-            name: 'cmd-npx',
-            command: 'cmd',
-            args: ['/c', 'npx', 'ast-grep', ...cliArgs],
-            options: { shell: false },
-          },
-          {
-            name: 'powershell-npx',
-            command: 'powershell',
-            args: [
-              '-Command',
-              'npx ast-grep ' +
-                cliArgs
-                  .map(a => (a.startsWith('--') || a === '.' ? a : `'${a.replace(/'/g, "''")}'`))
-                  .join(' '),
-            ],
-            options: { shell: false },
-          },
-          {
-            name: 'direct-npx',
-            command: 'npx',
-            args: ['ast-grep', ...cliArgs],
-            options: { shell: false },
-          },
-        ] as const;
-
-        let lastError: Error | null = null;
-
-        for (const approach of approaches) {
-          try {
-            logger.debug('Attempting spawn approach', {
-              approach: approach.name,
-              command: approach.command,
-              args: approach.args,
-              cwd: options.projectPath,
-              pattern: options.pattern,
-              language: options.language,
-            });
-
-            astGrep = spawn(approach.command, approach.args, {
-              cwd: options.projectPath,
-              stdio: ['pipe', 'pipe', 'pipe'], // Change to pipe all streams for debugging
-              ...approach.options,
-              env: process.env,
-            });
-
-            executionMethod = approach.name;
-            logger.debug('Spawn succeeded', { approach: approach.name });
-            break;
-          } catch (approachError) {
-            lastError =
-              approachError instanceof Error ? approachError : new Error(String(approachError));
-            logger.debug('Spawn approach failed', {
-              approach: approach.name,
-              error: lastError.message,
-              code: (lastError as any).code,
-              shell: approach.options.shell,
-            });
-          }
-        }
-
-        if (!astGrep) {
-          logger.error('All spawn approaches failed', {
-            approaches: approaches.map(a => a.name),
-            lastError: lastError?.message,
-            cwd: options.projectPath,
-            nodeVersion: process.version,
-          });
-          throw new Error(
-            'All spawn approaches failed: ' + (lastError?.message || 'Unknown error')
-          );
-        }
-      }
-
-      if (!astGrep) {
-        throw new Error('Failed to spawn ast-grep: no process handle available.');
-      }
+      const astGrep = spawn(resolveAstGrepBinary(), cliArgs, {
+        cwd: options.projectPath,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+      });
+      const executionMethod = 'installed-binary';
 
       let stdout = '';
       let stderr = '';
 
-      astGrep.stdout?.on('data', data => {
-        stdout += data.toString();
-      });
-
-      astGrep.stderr?.on('data', data => {
-        const chunk = data.toString();
-        stderr += chunk;
-        // Only log stderr chunks that contain actual error information
-        if (chunk.includes('SyntaxError') || chunk.includes('Error') || chunk.includes('error')) {
-          logger.debug('ast-grep stderr:', chunk.substring(0, 200));
-        }
-      });
-
       astGrep.on('close', code => {
         clearInterval(activityInterval);
+        clearTimeout(timeout);
         logger.debug('ast-grep process closed', {
           code,
           executionMethod,
@@ -1225,6 +1152,7 @@ export async function executeAstGrep(options: {
 
       astGrep.on('error', processError => {
         clearInterval(activityInterval);
+        clearTimeout(timeout);
         logger.error('ast-grep process error', {
           error: processError.message,
           code: (processError as any).code,
@@ -1248,14 +1176,14 @@ export async function executeAstGrep(options: {
         );
       });
 
-      setTimeout(() => {
+      const timeout = setTimeout(() => {
         clearInterval(activityInterval);
         if (astGrep) {
           astGrep.kill();
         }
         reject(
           new Error(
-            'ast-grep search timed out after 30 seconds. For large projects, consider using filePattern to search specific directories (e.g., "src/**/*.py") or excludePatterns to exclude large directories.'
+            'ast-grep search timed out after 30 seconds. For large projects, use filePattern with a literal relative file or directory (e.g., "src") or use excludePatterns to exclude large directories.'
           )
         );
       }, 30000);
@@ -1433,116 +1361,27 @@ function getDefaultExcludePatterns(): string[] {
 
 export async function isAstGrepAvailable(): Promise<boolean> {
   return new Promise(resolve => {
-    // First, try to use the local binary if available
-    const localBinary = findLocalAstGrepBinary();
-    if (localBinary) {
-      // For Windows .cmd files, we need to use shell execution
-      const useShell = process.platform === 'win32' && localBinary.endsWith('.cmd');
-      const astGrep = spawn(localBinary, ['--version'], {
+    try {
+      const child = spawn(resolveAstGrepBinary(), ['--version'], {
         stdio: 'ignore',
-        shell: useShell,
+        shell: false,
       });
-
-      astGrep.on('close', code => {
-        resolve(code === 0);
-      });
-
-      astGrep.on('error', () => {
-        // If local binary fails, try npx fallback
-        const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-        const fallbackAstGrep = spawn(npxCmd, ['ast-grep', '--version'], {
-          stdio: 'ignore',
-          shell: false,
-        });
-
-        fallbackAstGrep.on('close', code => {
-          resolve(code === 0);
-        });
-
-        fallbackAstGrep.on('error', () => {
-          resolve(false);
-        });
-
-        setTimeout(() => {
-          fallbackAstGrep.kill();
-          resolve(false);
-        }, 5000);
-      });
-
-      setTimeout(() => {
-        astGrep.kill();
+      const timeout = setTimeout(() => {
+        child.kill();
         resolve(false);
       }, 5000);
-      return;
+      child.once('close', code => {
+        clearTimeout(timeout);
+        resolve(code === 0);
+      });
+      child.once('error', () => {
+        clearTimeout(timeout);
+        resolve(false);
+      });
+    } catch {
+      resolve(false);
     }
-
-    // If no local binary, use cmd /c npx approach (consistent with main execution)
-    const astGrep = spawn('cmd', ['/c', 'npx', 'ast-grep', '--version'], {
-      stdio: 'ignore',
-      shell: false,
-    });
-
-    astGrep.on('close', code => {
-      resolve(code === 0);
-    });
-
-    astGrep.on('error', () => {
-      resolve(false);
-    });
-
-    // Timeout after 5 seconds
-    setTimeout(() => {
-      astGrep.kill();
-      resolve(false);
-    }, 5000);
   });
-}
-
-// Try to find a locally installed ast-grep binary in node_modules/.bin
-function findLocalAstGrepBinary(): string | null {
-  try {
-    // Check multiple possible locations for the binary
-    const possibleLocations = [
-      path.join(process.cwd(), 'node_modules', '.bin'),
-      path.join(__dirname, '..', '..', '..', 'node_modules', '.bin'),
-      path.join(__dirname, '..', '..', 'node_modules', '.bin'),
-    ];
-
-    // Try different extensions based on platform
-    const extensions = process.platform === 'win32' ? ['.cmd', '.ps1', ''] : [''];
-
-    for (const binDir of possibleLocations) {
-      for (const ext of extensions) {
-        const exe = 'ast-grep' + ext;
-        const full = path.join(binDir, exe);
-        if (require('fs').existsSync(full)) {
-          logger.debug('Found local ast-grep binary', { path: full });
-          return full;
-        }
-      }
-    }
-
-    logger.debug('No local ast-grep binary found');
-    return null;
-  } catch (error) {
-    logger.debug('Error finding local ast-grep binary', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
-
-// Build a shell-safe command string with quoted arguments
-function buildShellCommand(cmd: string, args: string[]): string {
-  const quote = (s: string) => {
-    if (s === '.') return s;
-    // Simple quoting; sufficient for our arg shapes (no newlines)
-    if (process.platform === 'win32') {
-      return '"' + s.replace(/"/g, '\\"') + '"';
-    }
-    return "'" + s.replace(/'/g, "'\\''") + "'";
-  };
-  return cmd + ' ' + args.map(a => (a.startsWith('--') ? a : quote(a))).join(' ');
 }
 
 // Prepare a rule file based on args (rulePath | ruleYaml | ruleJson).

@@ -263,6 +263,26 @@ describe('LocalEmbeddingProvider', () => {
   });
 
   describe('Configuration Options', () => {
+    test('restores input order after length-bucketed inference', async () => {
+      provider = new LocalEmbeddingProvider();
+      const seen: string[][] = [];
+      (provider as any).initializePipeline = async () => {};
+      (provider as any).pipeline = async (texts: string[]) => {
+        seen.push(texts);
+        return texts.map(text => ({ data: new Float32Array(384).fill(Number(text.split(':')[0])) }));
+      };
+      const texts = ['7:' + 'x'.repeat(1500), '2:short', '8:' + 'x'.repeat(200), '1:tiny'];
+      const result = await provider.generateEmbeddings(texts);
+      expect(result.map(r => r.embedding[0])).toEqual([7, 2, 8, 1]);
+      expect(seen.length).toBeGreaterThan(1);
+      expect(seen.flat().sort()).toEqual([...texts].sort());
+    });
+
+    test('cache identity includes inference settings', () => {
+      expect(new LocalEmbeddingProvider().getCacheIdentity()).not.toBe(new LocalEmbeddingProvider({ normalize: false }).getCacheIdentity());
+      expect(new LocalEmbeddingProvider().getCacheIdentity()).not.toBe(new LocalEmbeddingProvider({ pooling: 'cls' }).getCacheIdentity());
+    });
+
     test('should respect maxLength configuration', () => {
       provider = new LocalEmbeddingProvider({ maxLength: 256 });
 

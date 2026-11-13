@@ -1,0 +1,15 @@
+# Local embedding refresh
+
+The local embedding path groups similarly sized inputs into batches of at most 16 and restores the original result order. This reduces padding without changing the input text, truncation, pooling or normalization settings.
+
+An incremental refresh reuses a stored vector when the exact input text, local model identity, inference settings, dimensions and storage format match. Moving a chunk to another line or index does not require inference. Line ranges and file metadata are refreshed even when a vector is reused. Cold builds and incremental updates now share a 2,000-character default chunk size; explicit overrides still apply.
+
+Reuse supports local float32 and int8 vectors. It adds a nullable input fingerprint to the existing database without deleting vectors. Older rows remain readable but need one successful refresh to acquire a fingerprint. Remote embeddings and TurboQuant vectors are excluded from this reuse path. These changes require no external API key or inference service.
+
+Cold builds also group identical pending inputs by that same local fingerprint before inference. Each unique input is encoded once, then its vector is assigned to every original chunk ID, source range and storage row. This applies even when a forced refresh bypasses stored reuse. Providers without a local fingerprint keep their original per-input behavior. Existing compatible indexes need no rebuild for this optimization. Trial v10 records both the number of actual inference inputs and the retained chunk count.
+
+The identity includes the configured model name and inference settings, rather than a digest of downloaded model weights. Replacing assets under the same model name requires rebuilding the index. During an incremental file refresh, inference failure leaves that file's previous vectors and freshness metadata intact. Database writes retain the existing storage behavior and are not an atomic file replacement; project-wide compatibility resets retain their existing behavior.
+
+AST chunks now receive unique ordinals after splitting and source ordering. A stored file layout revision makes existing indexes eligible for repair even when the source bytes and modification time are unchanged. The revision is marked current only after all chunk writes complete; interrupted writes remain eligible for repair. Automatic refresh waits for parser readiness and preserves the existing vector format, so it can reuse valid vectors instead of changing quantization or falling back to a different first-file layout.
+
+The v7 measurements identified the collision: 1,242 generated chunks shared 975 storage IDs. In v9, both clean indexing and automatic upgrade retain all 1,242 chunks. Upgrade reuses matching vectors and restores the missing evidence; its result matches a clean index byte-for-byte. The versioned source snapshots, frozen benchmark, costs and preservation checks are under `benchmarks/context-retrieval/v9`. V7 and the aborted v8 preflight remain preserved.

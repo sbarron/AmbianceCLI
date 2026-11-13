@@ -54,7 +54,11 @@
     "Use --embeddings for conceptual or cross-system questions whose implementation vocabulary is unknown",
     "Use --no-embeddings for concrete function, class, route, configuration, or path identifiers",
     "Convert semantic chunk symbols into one deterministic follow-up query",
+    "Refine conceptual queries by one behavior boundary or missing evidence role, not unrelated symbol lists",
+    "Read returned file ranges and candidate test setup/assertions before making coverage claims",
+    "Trace API behavior through registration, authorization, persistence, public consumption, and failure tests",
     "Challenge the leading subsystem with one competing module or negative check",
+    "Treat missing targets, truncation, and budget exhaustion as unresolved evidence gaps rather than confirmed absence",
     "Stop when every required evidence role has a grounded location and added results provide no novelty"
   ]
 }

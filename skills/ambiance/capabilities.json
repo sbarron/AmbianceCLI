@@ -34,7 +34,7 @@
     },
     {
       "name": "grep",
-      "description": "AST-based structural code search",
+      "description": "AST structural search with complete code-shaped patterns; not substring or regex search",
       "json": true
     },
     {
@@ -59,7 +59,7 @@
     },
     {
       "name": "handoff",
-      "description": "Discover Codex/Claude sessions and create compact evidence-linked handoffs",
+      "description": "Discover or locally search Codex/Claude sessions and create compact evidence-linked handoffs",
       "json": true
     },
     {

@@ -106,6 +106,7 @@ export interface SessionAdapter {
   source: HandoffSource;
   resolveRoot(): string;
   inspect(filePath: string): SessionSummary | undefined;
+  enrichSummary?(session: SessionSummary): SessionSummary;
   loadEvents(session: SessionSummary): Promise<NormalizedHandoffEvent[]>;
 }
 
@@ -119,7 +120,7 @@ export interface SessionCatalogEntry {
 
 export interface SessionCatalogV1 {
   version: 1;
-  inspectorVersion: 2;
+  inspectorVersion: 3;
   updatedAt: string;
   entries: Record<string, SessionCatalogEntry>;
 }
@@ -129,6 +130,29 @@ export interface HandoffListResult {
   listId: string;
   projectPath?: string;
   scannedSources: HandoffSource[];
+}
+
+export interface HandoffSearchResult extends SessionSummary {
+  selection: number;
+  score: number;
+  snippet: string;
+}
+
+export interface HandoffSearchIndexing {
+  scannedSessions: number;
+  indexedSessions: number;
+  reusedSessions: number;
+  removedSessions: number;
+  errors: string[];
+}
+
+export interface HandoffSearchResultSet {
+  query: string;
+  results: HandoffSearchResult[];
+  searchId: string;
+  projectPath?: string;
+  scannedSources: HandoffSource[];
+  indexing: HandoffSearchIndexing;
 }
 
 export interface HandoffArtifactPaths {

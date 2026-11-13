@@ -12,8 +12,8 @@ const doctorReportSchema = z
   .object({
     success: z.literal(true),
     timestamp: z.string(),
-    node: z.record(z.any()),
-    dependencies: z.record(z.any()),
+    node: z.record(z.string(), z.any()),
+    dependencies: z.record(z.string(), z.any()),
   })
   .passthrough();
 
@@ -53,16 +53,16 @@ const migrateMcpMapSchema = jsonEnvelopeSchema.extend({
 const hintsSchema = jsonEnvelopeSchema.extend({
   command: z.literal('hints'),
   exitCode: z.literal(0),
-  hints: z.union([z.string(), z.record(z.any())]),
+  hints: z.union([z.string(), z.record(z.string(), z.any())]),
   type: z.string().optional(),
-  metadata: z.record(z.any()).optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
 });
 
 const contextSchema = jsonEnvelopeSchema.extend({
   command: z.literal('context'),
   exitCode: z.literal(0),
   compactedContent: z.string(),
-  metadata: z.record(z.any()).optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
   usage: z.string().optional(),
 });
 
@@ -121,7 +121,7 @@ const summarySchema = jsonEnvelopeSchema.extend({
   command: z.literal('summary'),
   exitCode: z.literal(0),
   summary: z.string(),
-  metadata: z.record(z.any()).optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
 });
 
 const packsCreateSchema = jsonEnvelopeSchema.extend({
@@ -197,6 +197,27 @@ const handoffListSchema = jsonEnvelopeSchema.extend({
   sessions: z.array(handoffSessionSchema),
 });
 
+const handoffSearchSchema = jsonEnvelopeSchema.extend({
+  command: z.literal('handoff'),
+  exitCode: z.literal(0),
+  action: z.literal('search'),
+  query: z.string().min(1),
+  searchId: z.string().min(1),
+  results: z.array(
+    handoffSessionSchema.extend({
+      score: z.number().nonnegative(),
+      snippet: z.string(),
+    })
+  ),
+  indexing: z.object({
+    scannedSessions: z.number().nonnegative(),
+    indexedSessions: z.number().nonnegative(),
+    reusedSessions: z.number().nonnegative(),
+    removedSessions: z.number().nonnegative(),
+    errors: z.array(z.string()),
+  }),
+});
+
 const handoffCreateSchema = jsonEnvelopeSchema.extend({
   command: z.literal('handoff'),
   exitCode: z.literal(0),
@@ -208,11 +229,11 @@ const handoffCreateSchema = jsonEnvelopeSchema.extend({
       mode: z.enum(['compact', 'standard']),
       maxTokens: z.number().positive(),
       estimatedTokens: z.number().positive(),
-      sections: z.record(z.any()),
-      repository: z.record(z.any()),
+      sections: z.record(z.string(), z.any()),
+      repository: z.record(z.string(), z.any()),
     })
     .passthrough(),
-  paths: z.record(z.any()),
+  paths: z.record(z.string(), z.any()),
   content: z.string().min(1),
 });
 
@@ -252,6 +273,7 @@ module.exports = {
   packsDeleteSchema,
   packsTemplateSchema,
   handoffListSchema,
+  handoffSearchSchema,
   handoffCreateSchema,
   handoffShowSchema,
   handoffEvidenceSchema,

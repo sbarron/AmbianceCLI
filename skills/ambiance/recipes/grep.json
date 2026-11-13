@@ -1,19 +1,13 @@
 {
   "name": "grep",
-  "description": "AST-based structural search.",
+  "description": "AST-based structural search for complete code-shaped syntax patterns, not text substring or regex search.",
   "defaults": {
     "language": "typescript",
     "format": "json"
   },
   "command": "grep",
-  "args": [
-    "${pattern}",
-    "--json",
-    "--project-path",
-    "${projectPath}",
-    "--language",
-    "${language}"
-  ],
+  "args": ["${pattern}", "--json", "--project-path", "${projectPath}", "--language", "${language}"],
+  "optionalArgs": ["--file-pattern <relative-file-or-directory>", "--max-matches <n>"],
   "outputSchema": {
     "pattern": "string - the AST pattern used",
     "language": "string - target language",
@@ -33,8 +27,13 @@
     "Does not require embeddings",
     "Use $VAR for single captures and $$$VAR for zero-or-more captures",
     "Use single quotes in PowerShell to avoid $ expansion",
-    "Faster and more precise than regex for code patterns",
+    "Bare identifiers match whole syntax nodes; fragments such as revok are not substring search",
+    "Regex literals, regex wildcards, and | alternation are not valid basic AST patterns",
+    "Use complete patterns such as app.delete($PATH, $HANDLER)",
+    "--file-pattern accepts a literal relative file or directory, not a wildcard glob",
+    "Use host text/content search for literal paths, fragments, comments, or regex",
     "Use after context --format index jump-target selection",
-    "Follow with native lexical search (rg/grep) for exact string-level detail capture"
+    "Follow matches with targeted file-range reads",
+    "Zero matches are an unresolved evidence gap unless appropriate semantics and adequate scope were verified"
   ]
 }

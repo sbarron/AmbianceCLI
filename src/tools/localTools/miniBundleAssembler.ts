@@ -4,9 +4,8 @@
  * @keyFunctions:
  *   - assembleMiniBundle(): Create token-budgeted code snippets
  *   - extractSnippetWithContext(): Extract symbol with surrounding context
- *   - normalizeSnippet(): Strip comments, collapse imports, normalize code
- *   - applyTokenBudgeting(): Greedy packing within token limits
- * @context: Assembles tight, relevant code bundles for AI consumption
+ *   - applyTokenBudgeting(): Preserve frontier order and bound whole-line excerpts
+ * @context: Assembles original source evidence with attributable line ranges
  */
 
 import { readFileSync } from 'fs';
@@ -32,6 +31,9 @@ export interface SnippetCandidate {
   tokenCount: number;
   priority: number;
   helpers: HelperFunction[];
+  start?: number;
+  end?: number;
+  truncated?: boolean;
 }
 
 export interface HelperFunction {
@@ -74,9 +76,9 @@ export async function assembleMiniBundle(
 
   const options: SnippetExtractionOptions = {
     maxTokens,
-    contextLines: 30, // Lines above/below symbol
-    includeHelpers: true,
-    normalizeCode: true,
+    contextLines: 30,
+    includeHelpers: false,
+    normalizeCode: false,
   };
 
   // 1. Extract snippets for each target
@@ -97,22 +99,21 @@ export async function assembleMiniBundle(
     }
   }
 
-  // 2. Sort by priority and confidence
-  snippetCandidates.sort((a, b) => {
-    const scoreA = a.priority * a.target.confidence;
-    const scoreB = b.priority * b.target.confidence;
-    return scoreB - scoreA;
-  });
+  // The upstream frontier already reserves exact-symbol and semantic/module
+  // coverage. A second lexical/role sort here destroys that coverage.
 
   // 3. Apply token budgeting with greedy packing
   const selectedSnippets = applyTokenBudgeting(snippetCandidates, maxTokens);
 
   // 4. Convert to final bundle format
   const bundle: BundleSnippet[] = selectedSnippets.map(candidate => ({
-    file: getRelativePath(candidate.target.file),
+    file: getRelativePath(candidate.target.file, allFiles),
     symbol: candidate.target.symbol,
     snippet: candidate.normalizedSnippet,
     byteLen: Buffer.byteLength(candidate.normalizedSnippet, 'utf8'),
+    start: candidate.start,
+    end: candidate.end,
+    truncated: candidate.truncated,
   }));
 
   logger.info('✅ Mini-bundle assembled', {
@@ -140,12 +141,13 @@ async function extractSnippetCandidate(
     const lines = content.split('\n');
 
     // Extract snippet with context
-    const rawSnippet = extractSnippetWithContext(
+    const extracted = extractSnippetWithContext(
       lines,
       target.start || 0,
       target.end || 0,
       options.contextLines
     );
+    const rawSnippet = extracted.snippet;
 
     if (!rawSnippet.trim()) {
       return null;
@@ -172,6 +174,8 @@ async function extractSnippetCandidate(
       tokenCount,
       priority,
       helpers,
+      start: extracted.start,
+      end: extracted.end,
     };
   } catch (error) {
     logger.debug('Failed to extract snippet candidate', {
@@ -191,7 +195,7 @@ function extractSnippetWithContext(
   startPos: number,
   endPos: number,
   contextLines: number
-): string {
+): { snippet: string; start: number; end: number } {
   let startLine: number;
   let endLine: number;
 
@@ -218,17 +222,8 @@ function extractSnippetWithContext(
     endLine = Math.min(lines.length - 1, startLine + 40);
   }
 
-  // Expand to include complete function/class blocks
-  startLine = findBlockStart(lines, startLine);
-  endLine = findBlockEnd(lines, endLine);
-
-  // Include more surrounding context for copyability
-  const contextPadding = 3; // Lines before and after
-  startLine = Math.max(0, startLine - contextPadding);
-  endLine = Math.min(lines.length - 1, endLine + contextPadding);
-
   const snippet = lines.slice(startLine, endLine + 1).join('\n');
-  return snippet;
+  return { snippet, start: startLine + 1, end: endLine + 1 };
 }
 
 /**
@@ -533,29 +528,26 @@ function applyTokenBudgeting(
   const selected: SnippetCandidate[] = [];
   let remainingTokens = maxTokens;
 
-  // Reserve some tokens for the highest priority items
-  const reservedTokens = Math.min(maxTokens * 0.3, 1000);
-
-  // First pass: select high-priority items
+  // Keep frontier order and bound each source excerpt, so one large class
+  // cannot consume the entire source budget. Preserve whole original lines.
   for (const candidate of candidates) {
-    if (candidate.priority >= 0.8) {
-      if (candidate.tokenCount <= remainingTokens) {
-        selected.push(candidate);
-        remainingTokens -= candidate.tokenCount;
+    const allowance = Math.min(1200, remainingTokens);
+    if (allowance <= 0) break;
+    if (candidate.tokenCount <= allowance) {
+      selected.push(candidate);
+      remainingTokens -= candidate.tokenCount;
+    } else {
+      const lines: string[] = [];
+      for (const line of candidate.rawSnippet.split('\n')) {
+        if (estimateTokens([...lines, line].join('\n')) > allowance) break;
+        lines.push(line);
       }
-    }
-  }
-
-  // Second pass: fill remaining space greedily
-  for (const candidate of candidates) {
-    if (candidate.priority < 0.8 && !selected.includes(candidate)) {
-      // Only budget for the candidate snippet itself; helpers are not emitted in the bundle
-      const totalTokensNeeded = candidate.tokenCount;
-
-      if (totalTokensNeeded <= remainingTokens) {
-        selected.push(candidate);
-        remainingTokens -= totalTokensNeeded;
-      }
+      if (!lines.length) continue;
+      const snippet = lines.join('\n');
+      const tokenCount = estimateTokens(snippet);
+      selected.push({ ...candidate, rawSnippet: snippet, normalizedSnippet: snippet,
+        tokenCount, end: (candidate.start ?? 1) + lines.length - 1, truncated: true });
+      remainingTokens -= tokenCount;
     }
   }
 
@@ -631,11 +623,9 @@ function determinePriority(role?: string, symbol?: string): number {
 /**
  * Get relative path for display
  */
-function getRelativePath(absolutePath: string): string {
-  const parts = absolutePath.split(/[\/\\]/);
-  const srcIndex = parts.findIndex(part => part === 'src');
-  if (srcIndex >= 0) {
-    return parts.slice(srcIndex).join('/');
-  }
-  return parts.slice(-3).join('/');
+function getRelativePath(absolutePath: string, files: FileInfo[]): string {
+  const canonical = (value: string) => path.normalize(value).replace(/\\/g, '/');
+  const file = files.find(item => canonical(item.absPath) === canonical(absolutePath));
+  // Preserve the discovery root, including nested package prefixes such as cli/src.
+  return (file?.relPath || absolutePath).replace(/\\/g, '/');
 }

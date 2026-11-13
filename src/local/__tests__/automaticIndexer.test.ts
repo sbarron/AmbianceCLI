@@ -1,568 +1,302 @@
-import { jest } from '@jest/globals';
-import { AutomaticIndexer, IndexingSession, IndexingOptions } from '../automaticIndexer';
-import * as path from 'path';
 import * as fs from 'fs';
+import * as path from 'path';
+import { globby } from 'globby';
+import { AutomaticIndexer } from '../automaticIndexer';
+import { ProjectIdentifier, loadIgnorePatterns } from '../projectIdentifier';
+import { TreeSitterProcessor } from '../treeSitterProcessor';
+import { LocalEmbeddingGenerator } from '../embeddingGenerator';
+import { apiClient } from '../../client/apiClient';
+import { logger } from '../../utils/logger';
 
-// Mock sqlite3 to avoid binding issues
-jest.mock('sqlite3', () => ({
-  Database: jest.fn().mockImplementation(() => ({
-    exec: jest.fn().mockImplementation((sql: any, callback: any) => callback(null)),
-    prepare: jest.fn().mockReturnValue({
-      run: jest.fn().mockImplementation((params: any, callback: any) => callback(null)),
-      all: jest.fn().mockImplementation((params: any, callback: any) => callback(null, [])),
-      get: jest.fn().mockImplementation((params: any, callback: any) => callback(null, null)),
-      finalize: jest.fn(),
-    }),
-    close: jest.fn().mockImplementation((callback: any) => callback(null)),
-  })),
+jest.mock('fs', () => ({
+  ...jest.requireActual('fs'),
+  existsSync: jest.fn(),
+  statSync: jest.fn(),
+  readFileSync: jest.fn(),
+  watch: jest.fn(),
+  rmSync: jest.fn(),
 }));
-
-// Mock dependencies
-jest.mock('fs');
-jest.mock('fs/promises');
-jest.mock('globby', () => ({
-  globby: jest.fn(),
-}));
+jest.mock('globby', () => ({ globby: jest.fn() }));
 jest.mock('../../client/apiClient', () => ({
-  apiClient: {
-    get: jest.fn(),
-    post: jest.fn(),
-    put: jest.fn(),
-    delete: jest.fn(),
-  },
+  apiClient: { get: jest.fn(), post: jest.fn(), delete: jest.fn() },
 }));
-jest.mock('../../utils/logger');
-jest.mock('../projectIdentifier');
-jest.mock('../treeSitterProcessor');
-jest.mock('../projectManager');
+jest.mock('../../utils/logger', () => ({
+  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
+jest.mock('../projectIdentifier', () => {
+  const instance = { identifyProject: jest.fn() };
+  return { ProjectIdentifier: { getInstance: () => instance }, loadIgnorePatterns: jest.fn() };
+});
+jest.mock('../treeSitterProcessor', () => ({ TreeSitterProcessor: jest.fn() }));
+jest.mock('../projectManager', () => ({ LocalProjectManager: jest.fn() }));
+jest.mock('../embeddingGenerator', () => ({ LocalEmbeddingGenerator: jest.fn() }));
 
-const mockFs = fs as jest.Mocked<typeof fs>;
-const mockLogger = {
-  info: jest.fn() as jest.MockedFunction<any>,
-  warn: jest.fn() as jest.MockedFunction<any>,
-  error: jest.fn() as jest.MockedFunction<any>,
-  debug: jest.fn() as jest.MockedFunction<any>,
-};
-
-// Import the mocked apiClient
-const { apiClient: mockApiClient } = require('../../client/apiClient');
-
-// Import the mocked loadIgnorePatterns
-const { loadIgnorePatterns: mockLoadIgnorePatternsImported } = require('../projectIdentifier');
-
-// Set up the mock for loadIgnorePatterns
-mockLoadIgnorePatternsImported.mockResolvedValue(['node_modules/**', 'dist/**', '.git/**']);
-
-// Mock project identifier
-const mockProjectIdentifier = {
-  detectProjectType: jest.fn() as jest.MockedFunction<any>,
-  findWorkspaceRoot: jest.fn() as jest.MockedFunction<any>,
-};
-
-// Mock loadIgnorePatterns function
-const mockLoadIgnorePatternsFn = jest.fn();
-
-// Mock tree-sitter processor
-const mockTreeSitterProcessor = {
-  parseFile: jest.fn() as jest.MockedFunction<any>,
-  extractSymbols: jest.fn() as jest.MockedFunction<any>,
-};
-
-// Mock project manager
-const mockProjectManager = {
-  addProject: jest.fn() as jest.MockedFunction<any>,
-  listProjects: jest.fn() as jest.MockedFunction<any>,
-  getProject: jest.fn() as jest.MockedFunction<any>,
-  removeProject: jest.fn() as jest.MockedFunction<any>,
-};
+const PROJECT = path.resolve('/test/project');
+const project = ProjectIdentifier.getInstance() as any;
+const parse = jest.fn(),
+  generate = jest.fn(),
+  update = jest.fn();
+const watch = fs.watch as jest.Mock,
+  glob = globby as jest.Mock,
+  api = apiClient as any;
+const originalKey = process.env.AMBIANCE_API_KEY;
 
 describe('AutomaticIndexer', () => {
   let indexer: AutomaticIndexer;
-  let mockProcessCwd: jest.MockedFunction<any>;
-
   beforeEach(() => {
-    // Reset all mocks
-    jest.clearAllMocks();
-
-    // Mock process.cwd()
-    mockProcessCwd = jest.spyOn(process, 'cwd').mockReturnValue('/test/project');
-
-    // Mock fs.existsSync to return true by default
-    mockFs.existsSync.mockReturnValue(true);
-
-    // Mock fs.statSync
-    mockFs.statSync.mockReturnValue({
-      isDirectory: () => true,
+    jest.resetAllMocks();
+    jest.useFakeTimers();
+    process.env.AMBIANCE_API_KEY = 'unit-fixture-key';
+    (fs.existsSync as jest.Mock).mockImplementation(
+      file => !path.basename(String(file)).startsWith('.')
+    );
+    (fs.statSync as jest.Mock).mockReturnValue({
       isFile: () => true,
+      isDirectory: () => false,
+      size: 30,
       mtime: new Date(),
-      size: 1000,
-    } as any);
-
-    // Set up default mocks
-    mockProjectIdentifier.detectProjectType.mockResolvedValue({
-      type: 'git',
-      name: 'test-project',
-      root: '/test/project',
     });
-
-    mockProjectIdentifier.findWorkspaceRoot.mockReturnValue('/test/project');
-
-    // Mock API client for hasValidAPIKey check
-    mockApiClient.get.mockImplementation((endpoint: string) => {
-      if (endpoint === '/health') {
-        return Promise.resolve({ status: 'ok' });
-      }
-      return Promise.resolve({});
+    (fs.readFileSync as jest.Mock).mockReturnValue('export const value = 1;');
+    glob.mockResolvedValue(['src/index.ts', 'src/utils.ts', 'src/types.ts']);
+    (loadIgnorePatterns as jest.Mock).mockResolvedValue(['node_modules/**', 'dist/**']);
+    project.identifyProject.mockResolvedValue({
+      id: 'test-project',
+      path: PROJECT,
+      name: 'fixture',
+      type: 'local',
     });
-
-    mockApiClient.post.mockResolvedValue({
-      id: 'test-session-id',
-      status: 'in_progress',
-      projectId: 'test-project-id',
-    });
-
-    // Reset the singleton instance
-    (AutomaticIndexer as any).instance = null;
+    parse.mockResolvedValue({ chunks: [{}], symbols: [{}] });
+    (TreeSitterProcessor as jest.Mock).mockImplementation(() => ({ parseAndChunk: parse }));
+    generate.mockResolvedValue({ embeddings: 3, totalChunks: 3, processedFiles: 3, errors: [] });
+    update.mockResolvedValue({ processedFiles: 1, embeddings: 1, totalChunks: 1, errors: [] });
+    (LocalEmbeddingGenerator as jest.Mock).mockImplementation(() => ({
+      generateProjectEmbeddings: generate,
+      updateProjectEmbeddings: update,
+    }));
+    api.get.mockImplementation(async (endpoint: string) =>
+      endpoint === '/health' ? { status: 'ok' } : { hash: null }
+    );
+    api.post.mockResolvedValue({ success: true });
+    api.delete.mockResolvedValue({ success: true });
+    watch.mockReturnValue({ close: jest.fn() });
+    (AutomaticIndexer as any).instance = undefined;
     indexer = AutomaticIndexer.getInstance();
-
-    // Inject mocks
-    (indexer as any).logger = mockLogger;
-    (indexer as any).projectIdentifier = mockProjectIdentifier;
-    (indexer as any).treeSitterProcessor = mockTreeSitterProcessor;
-    (indexer as any).projectManager = mockProjectManager;
   });
-
-  afterEach(() => {
-    mockProcessCwd.mockRestore();
+  afterEach(async () => {
+    for (const key of (indexer as any).watchedProjects.keys()) await indexer.stopWatching(key);
+    jest.useRealTimers();
+    if (originalKey === undefined) delete process.env.AMBIANCE_API_KEY;
+    else process.env.AMBIANCE_API_KEY = originalKey;
   });
-
-  describe('getInstance', () => {
-    it('should return the same instance (singleton pattern)', () => {
-      const instance1 = AutomaticIndexer.getInstance();
-      const instance2 = AutomaticIndexer.getInstance();
-
-      expect(instance1).toBe(instance2);
-    });
+  async function emit() {
+    await watch.mock.calls[0][2]('change', 'src/index.ts');
+  }
+  it('returns the singleton', () => expect(AutomaticIndexer.getInstance()).toBe(indexer));
+  it('detects a project and indexes it', async () => {
+    const session = await indexer.autoDetectAndIndex(PROJECT);
+    expect(project.identifyProject).toHaveBeenCalledWith(PROJECT);
+    expect(session?.status).toBe('completed');
+    expect(session?.filesProcessed).toBe(3);
   });
-
-  describe('autoDetectAndIndex', () => {
-    it('should detect project and start indexing', async () => {
-      // Mock globby to return some files
-      const { globby } = await import('globby');
-      (globby as jest.MockedFunction<any>).mockResolvedValue([
-        '/test/project/src/index.ts',
-        '/test/project/src/utils.ts',
-      ]);
-
-      const session = await indexer.autoDetectAndIndex();
-
-      expect(session).toBeDefined();
-      expect(session?.id).toBeDefined();
-      expect(typeof session?.id).toBe('string');
-      expect(mockProjectIdentifier.detectProjectType).toHaveBeenCalledWith('/test/project');
-      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining('detected project'));
-    });
-
-    it('should return null if no project detected', async () => {
-      mockProjectIdentifier.detectProjectType.mockResolvedValue(null);
-
-      const session = await indexer.autoDetectAndIndex();
-
-      expect(session).toBeNull();
-      expect(mockLogger.info).toHaveBeenCalledWith('📁 No project detected in current directory');
-    });
-
-    it('should handle detection errors gracefully', async () => {
-      mockProjectIdentifier.detectProjectType.mockRejectedValue(new Error('Detection failed'));
-
-      const session = await indexer.autoDetectAndIndex();
-
-      expect(session).toBeNull();
-      expect(mockLogger.error).toHaveBeenCalledWith('Auto-detection failed:', expect.any(Error));
-    });
+  it('does not parse when project detection returns null', async () => {
+    project.identifyProject.mockResolvedValue(null);
+    expect(await indexer.autoDetectAndIndex(PROJECT)).toBeNull();
+    expect(parse).not.toHaveBeenCalled();
   });
-
-  describe('indexProject', () => {
-    beforeEach(async () => {
-      // Mock globby to return test files - using dynamic import for ESM compatibility
-      const globbyModule = await import('globby');
-      const mockGlobby = globbyModule.globby;
-      (mockGlobby as jest.MockedFunction<any>).mockResolvedValue([
-        '/test/project/src/index.ts',
-        '/test/project/src/utils.ts',
-        '/test/project/src/types.ts',
-      ]);
-
-      // Mock fs.readFileSync
-      mockFs.readFileSync.mockReturnValue('// Test file content\nexport const test = "value";');
-
-      // Mock tree-sitter processing
-      mockTreeSitterProcessor.parseFile.mockResolvedValue({
-        symbols: [{ name: 'test', type: 'const', line: 2, isExported: true }],
-        imports: [],
-        exports: ['test'],
-      });
-    });
-
-    it('should index project successfully', async () => {
-      const options: IndexingOptions = {
-        force: false,
-        skipCloud: false,
-      };
-
-      const session = await indexer.indexProject('/test/project', options);
-
-      expect(session.id).toBeDefined();
-      expect(session.projectId).toBeDefined();
-      expect(session.status).toBe('completed');
-      expect(session.filesFound).toBe(3);
-
-      expect(mockLoadIgnorePatternsImported).toHaveBeenCalledWith('/test/project');
-      expect(mockApiClient.post).toHaveBeenCalledWith(
-        '/v1/local-projects/start-indexing',
-        expect.any(Object)
-      );
-    });
-
-    it('should handle force option correctly', async () => {
-      const options: IndexingOptions = {
-        force: true,
-        skipCloud: false,
-      };
-
-      await indexer.indexProject('/test/project', options);
-
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        'Force indexing enabled - will re-index all files'
-      );
-    });
-
-    it('should skip cloud sync when skipCloud is true', async () => {
-      const options: IndexingOptions = {
-        force: false,
-        skipCloud: true,
-      };
-
-      await indexer.indexProject('/test/project', options);
-
-      expect(mockLogger.info).toHaveBeenCalledWith('Skipping cloud sync - local indexing only');
-      // Should not call cloud API
-      expect(mockApiClient.post).not.toHaveBeenCalled();
-    });
-
-    it('should filter files by pattern', async () => {
-      const options: IndexingOptions = {
-        force: false,
-        skipCloud: false,
-        pattern: '*.ts',
-      };
-
-      await indexer.indexProject('/test/project', options);
-
-      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining('pattern filter'));
-    });
-
-    it('should handle API errors gracefully', async () => {
-      mockApiClient.post.mockRejectedValue(new Error('API Error'));
-
-      const session = await indexer.indexProject('/test/project');
-
-      expect(session.status).toBe('failed');
-      expect(session.errors).toContain('API Error');
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        'Failed to start cloud indexing session:',
-        expect.any(Error)
-      );
-    });
-
-    it('should handle file processing errors', async () => {
-      mockTreeSitterProcessor.parseFile.mockRejectedValue(new Error('Parse error'));
-
-      const session = await indexer.indexProject('/test/project');
-
-      // Should continue processing other files
-      expect(session.status).toBe('completed');
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to process file'),
-        expect.any(Error)
-      );
-    });
+  it('handles detection errors', async () => {
+    project.identifyProject.mockRejectedValue(new Error('Detection failed'));
+    expect(await indexer.autoDetectAndIndex(PROJECT)).toBeNull();
+    expect(logger.error).toHaveBeenCalledWith('Auto-detection failed:', expect.any(Error));
   });
-
-  describe('resetProjectIndexes', () => {
-    it('should reset project indexes successfully', async () => {
-      mockApiClient.post.mockResolvedValue({ success: true });
-
-      const result = await indexer.resetProjectIndexes('/test/project');
-
-      expect(result).toBe(true);
-      expect(mockApiClient.post).toHaveBeenCalledWith('/v1/local-projects/reset', {
-        projectPath: '/test/project',
-      });
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        'Successfully reset indexes for project: /test/project'
-      );
-    });
-
-    it('should handle reset API errors', async () => {
-      mockApiClient.post.mockRejectedValue(new Error('Reset failed'));
-
-      const result = await indexer.resetProjectIndexes('/test/project');
-
-      expect(result).toBe(false);
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        'Failed to reset project indexes:',
-        expect.any(Error)
-      );
-    });
+  it('indexes discovered files and records parsed chunks', async () => {
+    const session = await indexer.indexProject(PROJECT);
+    expect(session.status).toBe('completed');
+    expect(session.filesProcessed).toBe(3);
+    expect(session.chunksCreated).toBe(3);
+    expect(parse).toHaveBeenCalledWith(
+      expect.any(String),
+      'typescript',
+      path.join(PROJECT, 'src/index.ts')
+    );
   });
-
-  describe('startWatching', () => {
-    it('should start watching project files', async () => {
-      const mockWatcher = {
-        on: jest.fn() as jest.MockedFunction<any>,
-        close: jest.fn() as jest.MockedFunction<any>,
-      };
-
-      // Mock fs.watch with proper typing
-      mockFs.watch = jest.fn().mockReturnValue(mockWatcher) as jest.MockedFunction<typeof fs.watch>;
-
-      await indexer.startWatching('/test/project');
-
-      expect(mockFs.watch).toHaveBeenCalledWith(
-        expect.stringContaining('test'),
-        { recursive: true },
-        expect.any(Function)
-      );
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        'Started watching for file changes: /test/project'
-      );
-    });
-
-    it('should handle watch setup errors', async () => {
-      mockFs.watch = jest.fn().mockImplementation(() => {
-        throw new Error('Watch failed');
-      }) as jest.MockedFunction<typeof fs.watch>;
-
-      await expect(indexer.startWatching('/test/project')).rejects.toThrow('Watch failed');
-      expect(mockLogger.error).toHaveBeenCalledWith('Failed to start watching:', expect.any(Error));
-    });
+  it('force processes all files even with matching local hashes', async () => {
+    await indexer.indexProject(PROJECT, { skipCloud: true });
+    parse.mockClear();
+    await indexer.indexProject(PROJECT, { force: true, skipCloud: true });
+    expect(parse).toHaveBeenCalledTimes(3);
   });
-
-  describe('stopWatching', () => {
-    it('should stop watching project files', async () => {
-      // First start watching
-      const mockWatcher = {
-        on: jest.fn() as jest.MockedFunction<any>,
-        close: jest.fn() as jest.MockedFunction<any>,
-      };
-      mockFs.watch = jest.fn().mockReturnValue(mockWatcher) as jest.MockedFunction<typeof fs.watch>;
-
-      await indexer.startWatching('/test/project');
-
-      // Then stop watching
-      await indexer.stopWatching('/test/project');
-
-      expect(mockWatcher.close).toHaveBeenCalled();
-      expect(mockLogger.info).toHaveBeenCalledWith('Stopped watching: /test/project');
-    });
-
-    it('should handle stop watching when not watching', async () => {
-      await indexer.stopWatching('/test/project');
-
-      expect(mockLogger.warn).toHaveBeenCalledWith('No watcher found for project: /test/project');
-    });
+  it('skipCloud performs no cloud health, hash or upload requests', async () => {
+    await indexer.indexProject(PROJECT, { skipCloud: true });
+    expect(api.get).not.toHaveBeenCalled();
+    expect(api.post).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalled();
   });
-
-  describe('getSession', () => {
-    it('should return session by ID', async () => {
-      // Create a session first
-      const session = await indexer.indexProject('/test/project');
-
-      const retrieved = indexer.getSession(session.id);
-
-      expect(retrieved).toBe(session);
-    });
-
-    it('should return undefined for non-existent session', () => {
-      const retrieved = indexer.getSession('non-existent-id');
-
-      expect(retrieved).toBeUndefined();
-    });
+  it('passes the requested discovery pattern', async () => {
+    await indexer.indexProject(PROJECT, { pattern: '*.ts' });
+    expect(glob).toHaveBeenCalledWith(['*.ts'], expect.objectContaining({ cwd: PROJECT }));
   });
-
-  describe('getActiveSessions', () => {
-    it('should return all sessions', async () => {
-      // Create multiple sessions
-      const session1 = await indexer.indexProject('/test/project1');
-      const session2 = await indexer.indexProject('/test/project2');
-
-      const sessions = indexer.getActiveSessions();
-
-      expect(sessions).toHaveLength(2);
-      expect(sessions).toContain(session1);
-      expect(sessions).toContain(session2);
-    });
-
-    it('should return empty array when no sessions', () => {
-      const sessions = indexer.getActiveSessions();
-
-      expect(sessions).toEqual([]);
-    });
+  it('continues locally when the cloud API fails', async () => {
+    api.post.mockRejectedValue(new Error('API Error'));
+    const session = await indexer.indexProject(PROJECT);
+    expect(session.status).toBe('completed');
+    expect(session.errors).toContain('Cloud API unavailable - continuing with local indexing');
+    expect(generate).toHaveBeenCalled();
   });
-
-  describe('file change handling', () => {
-    it('should handle file changes with debouncing', async () => {
-      // Mock setTimeout to control timing
-      jest.useFakeTimers();
-
-      const mockWatcher = {
-        on: jest.fn() as jest.MockedFunction<any>,
-        close: jest.fn() as jest.MockedFunction<any>,
-      };
-      mockFs.watch = jest.fn().mockReturnValue(mockWatcher) as jest.MockedFunction<typeof fs.watch>;
-
-      await indexer.startWatching('/test/project');
-
-      // The fs.watch callback is passed directly, so we can't easily test the debouncing
-      // This test would require more complex mocking of the fs.watch callback
-      expect(mockFs.watch).toHaveBeenCalled();
-
-      jest.useRealTimers();
+  it('continues past an individual parse failure and retains the error', async () => {
+    parse.mockRejectedValueOnce(new Error('Parse error'));
+    const session = await indexer.indexProject(PROJECT);
+    expect(session.filesProcessed).toBe(2);
+    expect(session.errors.some(error => error.includes('Parse error'))).toBe(true);
+    expect(parse).toHaveBeenCalledTimes(3);
+  });
+  it('fails visibly on returned inference errors and retries unchanged source', async () => {
+    generate.mockResolvedValueOnce({
+      embeddings: 0,
+      totalChunks: 3,
+      processedFiles: 3,
+      errors: ['Inference failed'],
     });
-
-    it('should trigger incremental embedding updates on file changes', async () => {
-      // This test verifies that file changes trigger embedding updates, not full re-indexing
-      const mockEmbeddingGenerator = {
-        updateProjectEmbeddings: jest.fn().mockResolvedValue({
-          processedFiles: 1,
-          embeddings: 5,
-          totalChunks: 5,
-        }),
-      };
-
-      // Mock the embedding generator
-      jest
-        .spyOn(require('../embeddingGenerator'), 'LocalEmbeddingGenerator')
-        .mockImplementation(() => mockEmbeddingGenerator as any);
-
-      // Mock file system watching
-      let fileChangeCallback: ((eventType: string, filename: string | null) => void) | null = null;
-      const mockWatcher = {
-        close: jest.fn(),
-      };
-      mockFs.watch = jest.fn().mockImplementation((path: any, options: any, callback: any) => {
-        fileChangeCallback = callback;
-        return mockWatcher;
-      }) as jest.MockedFunction<typeof fs.watch>;
-
-      // Start watching
-      await indexer.startWatching('/test/project');
-
-      // Simulate file change
-      if (fileChangeCallback) {
-        fileChangeCallback('change', 'src/index.ts');
-      }
-
-      // Fast forward past debounce period
-      jest.advanceTimersByTime(180000); // 3 minutes
-
-      // Wait for promises to resolve
-      await new Promise(process.nextTick);
-
-      // Verify that incremental embedding update was called
-      expect(mockEmbeddingGenerator.updateProjectEmbeddings).toHaveBeenCalledWith(
-        expect.any(String), // projectId
-        '/test/project',
-        expect.objectContaining({
-          files: ['src/index.ts'], // Should only update changed file
+    await expect(indexer.indexProject(PROJECT, { skipCloud: true })).rejects.toThrow(
+      'Inference failed'
+    );
+    expect(indexer.getActiveSessions()[0].status).toBe('failed');
+    parse.mockClear();
+    expect((await indexer.indexProject(PROJECT, { skipCloud: true })).status).toBe('completed');
+    expect(parse).toHaveBeenCalledTimes(3);
+  });
+  it('resets indexes through the API', async () => {
+    expect(await indexer.resetProjectIndexes(PROJECT)).toBe(true);
+    expect(api.post).toHaveBeenCalledWith('/v1/local-projects/reset', { projectPath: PROJECT });
+  });
+  it('reports a reset API failure', async () => {
+    api.post.mockRejectedValue(new Error('Reset failed'));
+    expect(await indexer.resetProjectIndexes(PROJECT)).toBe(false);
+  });
+  it('registers a recursive watcher', async () => {
+    await indexer.startWatching(PROJECT);
+    expect(watch).toHaveBeenCalledWith(PROJECT, { recursive: true }, expect.any(Function));
+    expect((indexer as any).watchedProjects.size).toBe(1);
+  });
+  it('does not register a watcher after startup failure', async () => {
+    watch.mockImplementation(() => {
+      throw new Error('Watch failed');
+    });
+    await expect(indexer.startWatching(PROJECT)).rejects.toThrow('Watch failed');
+    expect((indexer as any).watchedProjects.size).toBe(0);
+  });
+  it('closes the watcher and periodic interval', async () => {
+    await indexer.startWatching(PROJECT);
+    const watcher = watch.mock.results[0].value;
+    await indexer.stopWatching(PROJECT);
+    expect(watcher.close).toHaveBeenCalled();
+    expect((indexer as any).staleCheckIntervals.size).toBe(0);
+  });
+  it('stopping an absent watcher is idempotent', async () => {
+    await expect(indexer.stopWatching(PROJECT)).resolves.toBeUndefined();
+  });
+  it('cancels pending updates when watching stops', async () => {
+    await indexer.startWatching(PROJECT, { debounceMs: 100 });
+    (fs.readFileSync as jest.Mock).mockReturnValue('edited');
+    await emit();
+    await indexer.stopWatching(PROJECT);
+    await jest.advanceTimersByTimeAsync(101);
+    expect(update).not.toHaveBeenCalled();
+  });
+  it('retrieves a session by id', async () => {
+    const session = await indexer.indexProject(PROJECT);
+    expect(indexer.getSession(session.id)).toBe(session);
+  });
+  it('returns undefined for an absent session', () =>
+    expect(indexer.getSession('absent')).toBeUndefined());
+  it('lists multiple sessions', async () => {
+    const a = await indexer.indexProject(PROJECT),
+      b = await indexer.indexProject(PROJECT);
+    expect(indexer.getActiveSessions()).toEqual([a, b]);
+  });
+  it('starts without sessions', () => expect(indexer.getActiveSessions()).toEqual([]));
+  it('debounces repeated changes into one update', async () => {
+    await indexer.startWatching(PROJECT, { debounceMs: 100 });
+    (fs.readFileSync as jest.Mock).mockReturnValue('edited');
+    await emit();
+    await emit();
+    await jest.advanceTimersByTimeAsync(99);
+    expect(update).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+  it('updates only the changed file', async () => {
+    await indexer.startWatching(PROJECT, { debounceMs: 100 });
+    (fs.readFileSync as jest.Mock).mockReturnValue('edited');
+    await emit();
+    await jest.advanceTimersByTimeAsync(100);
+    expect(update).toHaveBeenCalledWith(
+      'test-project',
+      PROJECT,
+      expect.objectContaining({ files: ['src/index.ts'] })
+    );
+  });
+  it('retries the same source after a failed incremental update', async () => {
+    await indexer.startWatching(PROJECT, { debounceMs: 100 });
+    update.mockResolvedValueOnce({ errors: ['Inference failed'] });
+    (fs.readFileSync as jest.Mock).mockReturnValue('edited');
+    await emit();
+    await jest.advanceTimersByTimeAsync(100);
+    await emit();
+    await jest.advanceTimersByTimeAsync(100);
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+  it('filters discovered build output and dependencies', async () => {
+    glob.mockResolvedValue(['src/index.ts', 'node_modules/bad.ts', 'dist/bad.ts']);
+    const session = await indexer.indexProject(PROJECT);
+    expect(session.filesFound).toBe(1);
+    expect(parse).toHaveBeenCalledTimes(1);
+  });
+  it('unchanged local files require neither parsing nor inference', async () => {
+    await indexer.indexProject(PROJECT, { skipCloud: true });
+    parse.mockClear();
+    generate.mockClear();
+    const session = await indexer.indexProject(PROJECT, { skipCloud: true });
+    expect(session.filesProcessed).toBe(0);
+    expect(parse).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+  });
+  it('serializes three queued updates and recovers after a failure', async () => {
+    let release!: () => void;
+    let failSecond!: () => void;
+    const started: number[] = [];
+    const first = (indexer as any).queueProcessing(
+      PROJECT,
+      () =>
+        new Promise<void>(resolve => {
+          started.push(1);
+          release = resolve;
         })
-      );
-    });
-  });
-
-  describe('ignore patterns', () => {
-    it('should apply ignore patterns correctly', async () => {
-      mockLoadIgnorePatternsImported.mockResolvedValue(['node_modules/**', '*.log', 'dist/**']);
-
-      const globbyModule = await import('globby');
-      const mockGlobby = globbyModule.globby;
-      (mockGlobby as jest.MockedFunction<any>).mockResolvedValue([
-        '/test/project/src/index.ts',
-        '/test/project/src/utils.ts',
-      ]);
-
-      await indexer.indexProject('/test/project');
-
-      expect(mockGlobby).toHaveBeenCalledWith(
-        expect.any(Array),
-        expect.objectContaining({
-          ignore: expect.arrayContaining(['node_modules/**']),
+    );
+    const second = (indexer as any).queueProcessing(
+      PROJECT,
+      () =>
+        new Promise<void>((resolve, reject) => {
+          started.push(2);
+          failSecond = () => reject(new Error('Failed'));
         })
-      );
+    );
+    const secondHandled = expect(second).rejects.toThrow('Failed');
+    const third = (indexer as any).queueProcessing(PROJECT, async () => {
+      started.push(3);
     });
-  });
-
-  describe('change detection', () => {
-    it('should skip unchanged files when not forcing', async () => {
-      // Mock file hash calculation
-      const mockCrypto = {
-        createHash: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          digest: jest.fn().mockReturnValue('same-hash'),
-        }),
-      };
-
-      // Mock existing file record with same hash
-      mockApiClient.get.mockResolvedValue({
-        files: [
-          {
-            path: 'src/index.ts',
-            hash: 'same-hash',
-            lastModified: new Date().toISOString(),
-          },
-        ],
-      });
-
-      const session = await indexer.indexProject('/test/project', { force: false });
-
-      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining('files have changes'));
-    });
-
-    it('should process all files when forcing', async () => {
-      const session = await indexer.indexProject('/test/project', { force: true });
-
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        'Force indexing enabled - will re-index all files'
-      );
-      expect(session.filesFound).toBeGreaterThan(0);
-    });
-  });
-
-  describe('error recovery', () => {
-    it('should continue processing after individual file errors', async () => {
-      // Make one file fail
-      mockTreeSitterProcessor.parseFile
-        .mockResolvedValueOnce({
-          symbols: [],
-          imports: [],
-          exports: [],
-        })
-        .mockRejectedValueOnce(new Error('Parse failed'))
-        .mockResolvedValueOnce({
-          symbols: [{ name: 'test', type: 'const', line: 1, isExported: true }],
-          imports: [],
-          exports: ['test'],
-        });
-
-      const session = await indexer.indexProject('/test/project');
-
-      expect(session.status).toBe('completed');
-      expect(session.errors.length).toBeGreaterThan(0);
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to process'),
-        expect.any(Error)
-      );
-    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([1]);
+    release();
+    await first;
+    await Promise.resolve();
+    await Promise.resolve();
+    const beforeSecondFinished = [...started];
+    failSecond();
+    await secondHandled;
+    await third;
+    expect(beforeSecondFinished).toEqual([1, 2]);
+    expect(started).toEqual([1, 2, 3]);
+    expect((indexer as any).processingQueue.size).toBe(0);
   });
 });

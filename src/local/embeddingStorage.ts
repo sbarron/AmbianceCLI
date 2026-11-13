@@ -55,6 +55,7 @@ export interface EmbeddingChunk {
     embeddingFormat?: EmbeddingFormat;
     embeddingDimensions?: number;
     embeddingProvider?: string;
+    embeddingInputKey?: string;
   };
   hash: string;
   createdAt: Date;
@@ -98,6 +99,7 @@ export interface FileMetadata {
   fileSize: number;
   language?: string;
   lineCount?: number;
+  chunkLayoutVersion?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -222,6 +224,15 @@ export class LocalEmbeddingStorage {
       logger.info('✅ SQLite database opened', { path: this.dbPath });
 
       await this.createTables();
+      // Additive cache metadata: preserve existing vectors and schema-v2 readers.
+      const columns = this.db.prepare('PRAGMA table_info(embeddings)').all() as { name: string }[];
+      if (!columns.some(column => column.name === 'metadata_embedding_input_key')) {
+        this.db.exec('ALTER TABLE embeddings ADD COLUMN metadata_embedding_input_key TEXT');
+      }
+      const fileColumns = this.db.prepare('PRAGMA table_info(files)').all() as { name: string }[];
+      if (!fileColumns.some(column => column.name === 'chunk_layout_version')) {
+        this.db.exec('ALTER TABLE files ADD COLUMN chunk_layout_version INTEGER');
+      }
       this.prepareStatements();
       this.initialized = true;
     } catch (err) {
@@ -659,9 +670,14 @@ export class LocalEmbeddingStorage {
 
     // File management statements
     this.insertFileStmt = this.db.prepare(`
-      INSERT OR REPLACE INTO files (
-        id, project_id, path, hash, last_modified, file_size, language, line_count, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO files (
+        id, project_id, path, hash, last_modified, file_size, language, line_count, chunk_layout_version, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id, path = excluded.path, hash = excluded.hash,
+        last_modified = excluded.last_modified, file_size = excluded.file_size,
+        language = excluded.language, line_count = excluded.line_count,
+        chunk_layout_version = excluded.chunk_layout_version, updated_at = CURRENT_TIMESTAMP
     `);
 
     this.updateFileStmt = this.db.prepare(`
@@ -682,8 +698,8 @@ export class LocalEmbeddingStorage {
         id, project_id, file_id, file_path, chunk_index, content, embedding,
         metadata_type, metadata_language, metadata_symbols,
         metadata_start_line, metadata_end_line, metadata_embedding_format,
-        metadata_embedding_dimensions, metadata_embedding_provider, hash, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        metadata_embedding_dimensions, metadata_embedding_provider, hash, metadata_embedding_input_key, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `);
 
     this.updateStmt = this.db.prepare(`
@@ -850,7 +866,8 @@ export class LocalEmbeddingStorage {
         embeddingFormat, // Store the actual format used
         chunk.metadata.embeddingDimensions || null,
         chunk.metadata.embeddingProvider || null,
-        chunk.hash
+        chunk.hash,
+        chunk.metadata.embeddingInputKey || null
       );
 
       // Update project stats
@@ -1374,6 +1391,7 @@ export class LocalEmbeddingStorage {
         embeddingFormat: row.metadata_embedding_format,
         embeddingDimensions: row.metadata_embedding_dimensions,
         embeddingProvider: row.metadata_embedding_provider,
+        embeddingInputKey: row.metadata_embedding_input_key || undefined,
       },
       hash: row.hash,
       createdAt: new Date(row.created_at),
@@ -1409,7 +1427,8 @@ export class LocalEmbeddingStorage {
         metadata.lastModified.toISOString(),
         metadata.fileSize,
         metadata.language || null,
-        metadata.lineCount || null
+        metadata.lineCount || null,
+        metadata.chunkLayoutVersion ?? null
       );
       logger.debug('✅ File metadata stored', {
         fileId: metadata.id,
@@ -1452,6 +1471,7 @@ export class LocalEmbeddingStorage {
         fileSize: row.file_size,
         language: row.language,
         lineCount: row.line_count,
+        chunkLayoutVersion: row.chunk_layout_version ?? undefined,
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
       };
@@ -1487,6 +1507,7 @@ export class LocalEmbeddingStorage {
         fileSize: row.file_size,
         language: row.language,
         lineCount: row.line_count,
+        chunkLayoutVersion: row.chunk_layout_version ?? undefined,
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
       }));

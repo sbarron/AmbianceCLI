@@ -83,6 +83,11 @@ export function resolveAmbianceHome(): string {
   return override ? path.resolve(override) : path.join(os.homedir(), '.ambiance');
 }
 
+export function resolveHandoffCacheDir(): string {
+  const override = process.env.AMBIANCE_HANDOFF_CACHE_DIR?.trim();
+  return override ? path.resolve(override) : path.join(resolveAmbianceHome(), 'cache');
+}
+
 export function ensureDirSync(directory: string): void {
   fs.mkdirSync(directory, { recursive: true });
 }

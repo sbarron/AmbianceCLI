@@ -120,6 +120,8 @@ async function refreshCodeEvidence(
       maxTokens: 900,
       maxSimilarChunks: 8,
       useEmbeddings: false,
+      disableEmbeddings: true,
+      generateEmbeddingsIfMissing: false,
       autoSync: false,
     })) as Record<string, unknown>;
 

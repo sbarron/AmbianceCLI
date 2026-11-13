@@ -5,11 +5,16 @@ import * as path from 'path';
 
 import { classifyToolOutput, normalizeToolOutput } from '../adapters/shared';
 import { listSessions } from '../catalog';
-import { extractReferencedFiles } from '../repository';
+import { captureRepositoryState, extractReferencedFiles } from '../repository';
 import { handleHandoffCommand } from '../service';
 import { readHandoffEvidence } from '../storage';
 import { cleanTitle } from '../utils';
-import type { HandoffArtifactPaths, HandoffV1, NormalizedHandoffEvent } from '../types';
+import type {
+  HandoffArtifactPaths,
+  HandoffV1,
+  NormalizedHandoffEvent,
+  SessionSummary,
+} from '../types';
 
 function fileHash(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
@@ -21,6 +26,7 @@ describe('portable handoffs', () => {
   let codexRoot: string;
   let claudeRoot: string;
   let handoffsRoot: string;
+  let codexSessionIndex: string;
   const previousEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -29,6 +35,7 @@ describe('portable handoffs', () => {
     codexRoot = path.join(root, 'codex');
     claudeRoot = path.join(root, 'claude');
     handoffsRoot = path.join(root, 'handoffs');
+    codexSessionIndex = path.join(root, 'session_index.jsonl');
     for (const directory of [projectPath, codexRoot, claudeRoot, handoffsRoot]) {
       fs.mkdirSync(directory, { recursive: true });
     }
@@ -44,6 +51,14 @@ describe('portable handoffs', () => {
     };
     writeFixture('codex-session.jsonl', path.join(codexRoot, 'codex.jsonl'));
     writeFixture('claude-session.jsonl', path.join(claudeRoot, 'claude.jsonl'));
+    fs.writeFileSync(
+      codexSessionIndex,
+      `${JSON.stringify({
+        id: 'codex-fixture-session',
+        thread_name: 'Codex provider indexed handoff title',
+        updated_at: '2026-07-14T10:00:01.000Z',
+      })}\n`
+    );
     const older = new Date('2026-07-14T10:05:00.000Z');
     const newer = new Date('2026-07-14T11:05:00.000Z');
     fs.utimesSync(path.join(codexRoot, 'codex.jsonl'), older, older);
@@ -51,16 +66,20 @@ describe('portable handoffs', () => {
 
     for (const key of [
       'AMBIANCE_CODEX_SESSIONS_DIR',
+      'AMBIANCE_CODEX_SESSION_INDEX',
       'AMBIANCE_CLAUDE_PROJECTS_DIR',
       'AMBIANCE_HANDOFF_CACHE_DIR',
       'AMBIANCE_HANDOFFS_DIR',
+      'CODEX_THREAD_ID',
     ]) {
       previousEnv[key] = process.env[key];
     }
     process.env.AMBIANCE_CODEX_SESSIONS_DIR = codexRoot;
+    process.env.AMBIANCE_CODEX_SESSION_INDEX = codexSessionIndex;
     process.env.AMBIANCE_CLAUDE_PROJECTS_DIR = claudeRoot;
     process.env.AMBIANCE_HANDOFF_CACHE_DIR = path.join(root, 'cache');
     process.env.AMBIANCE_HANDOFFS_DIR = handoffsRoot;
+    delete process.env.CODEX_THREAD_ID;
   });
 
   afterEach(() => {
@@ -83,10 +102,98 @@ describe('portable handoffs', () => {
       selection: 2,
       source: 'codex',
       sessionId: 'codex-fixture-session',
-      title: 'Implement portable handoffs for src/index.ts without writing provider session files.',
+      title: 'Codex provider indexed handoff title',
     });
     expect(listed.listId).toMatch(/^[a-f0-9]{16}$/);
     expect(fs.existsSync(path.join(root, 'cache', 'handoff-catalog-v1.json'))).toBe(true);
+  });
+
+  test('uses the rollout filename as the canonical Codex id and provider metadata as its title', () => {
+    const canonicalId = '11111111-2222-4333-8444-555555555555';
+    const sourcePath = path.join(codexRoot, `rollout-2026-07-14T10-00-00-${canonicalId}.jsonl`);
+    fs.writeFileSync(
+      sourcePath,
+      [
+        `{"timestamp":"2026-07-14T10:00:00.000Z","type":"session_meta","payload":{"session_id":"legacy-compacted-id","cwd":"${projectPath.replace(/\\/g, '\\\\')}"}}`,
+        '{"timestamp":"2026-07-14T10:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Fallback transcript title"}}',
+      ].join('\n') + '\n'
+    );
+    fs.appendFileSync(
+      codexSessionIndex,
+      `${JSON.stringify({
+        id: canonicalId,
+        thread_name: 'Canonical Codex UI title',
+        updated_at: '2026-07-14T10:00:02.000Z',
+      })}\n`
+    );
+
+    const listed = listSessions({ projectPath, sources: ['codex'], limit: 10 });
+    expect(listed.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: canonicalId,
+          title: 'Canonical Codex UI title',
+        }),
+      ])
+    );
+    expect(listed.sessions.some(session => session.sessionId === 'legacy-compacted-id')).toBe(
+      false
+    );
+  });
+
+  test('excludes the active Codex task unless explicitly requested', () => {
+    process.env.CODEX_THREAD_ID = 'codex-fixture-session';
+    expect(listSessions({ projectPath, sources: ['codex'] }).sessions).toHaveLength(0);
+    expect(
+      listSessions({ projectPath, sources: ['codex'], includeCurrent: true }).sessions
+    ).toHaveLength(1);
+  });
+
+  test('ranks redacted normalized conversation text with an incremental FTS cache', async () => {
+    const first = await handleHandoffCommand({
+      action: 'search',
+      query: 'normalized adapter',
+      projectPath,
+      sources: ['codex'],
+      limit: 5,
+    });
+    const results = first.results as Array<{
+      sessionId: string;
+      score: number;
+      snippet: string;
+    }>;
+    expect(results[0]).toMatchObject({ sessionId: 'codex-fixture-session' });
+    expect(results[0].score).toBeGreaterThan(0);
+    expect(results[0].snippet).toMatch(/normalized/i);
+    expect(first.indexing).toMatchObject({ indexedSessions: 1, reusedSessions: 0 });
+    expect(fs.existsSync(path.join(root, 'cache', 'handoff-search-v1.sqlite'))).toBe(true);
+
+    const redactedSecret = await handleHandoffCommand({
+      action: 'search',
+      query: 'super-secret-fixture-value',
+      projectPath,
+      sources: ['codex'],
+      limit: 5,
+    });
+    expect(redactedSecret.results).toEqual([]);
+
+    const second = await handleHandoffCommand({
+      action: 'search',
+      query: 'normalized adapter',
+      projectPath,
+      sources: ['codex'],
+      limit: 5,
+    });
+    expect(second.indexing).toMatchObject({ indexedSessions: 0, reusedSessions: 1 });
+
+    const privateReasoning = await handleHandoffCommand({
+      action: 'search',
+      query: 'private reasoning',
+      projectPath,
+      sources: ['claude'],
+      limit: 5,
+    });
+    expect(privateReasoning.results).toEqual([]);
   });
 
   test('creates a compact, redacted, evidence-linked handoff without changing the source', async () => {
@@ -182,6 +289,62 @@ describe('portable handoffs', () => {
       'src/runtime/handoff/catalog.ts',
       'tests/cli-contracts.test.js',
     ]);
+  });
+
+  test('refreshes handoff code evidence without enabling or maintaining project embeddings', async () => {
+    fs.writeFileSync(path.join(projectPath, 'package.json'), '{}\n');
+    const semanticCompact = await import('../../context/semanticCompact');
+    const contextSpy = jest.spyOn(semanticCompact, 'handleSemanticCompact').mockResolvedValue({
+      jumpTargets: [
+        {
+          file: path.join(projectPath, 'src', 'index.ts'),
+          symbol: 'fixture',
+          start: 1,
+          end: 1,
+        },
+      ],
+    });
+    const session: SessionSummary = {
+      sessionId: 'bounded-repository-refresh',
+      source: 'claude',
+      title: 'Bounded repository refresh',
+      sourcePath: path.join(claudeRoot, 'claude.jsonl'),
+      cwd: projectPath,
+      updatedAt: new Date().toISOString(),
+      sizeBytes: 1,
+    };
+    const events = [
+      {
+        id: 'event-1',
+        kind: 'assistant',
+        text: 'Review src/index.ts and the fixture symbol.',
+        sourceRef: {
+          id: 'event-1',
+          source: 'claude',
+          sessionId: session.sessionId,
+          sourcePath: session.sourcePath,
+          line: 1,
+          contentHash: 'hash',
+        },
+      },
+    ] as NormalizedHandoffEvent[];
+
+    try {
+      const repository = await captureRepositoryState({ projectPath, session, events });
+      expect(repository.codeEvidence).toEqual([
+        expect.objectContaining({ file: 'src/index.ts', symbol: 'fixture' }),
+      ]);
+      expect(contextSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          useEmbeddings: false,
+          disableEmbeddings: true,
+          generateEmbeddingsIfMissing: false,
+          autoSync: false,
+        })
+      );
+    } finally {
+      contextSpy.mockRestore();
+    }
   });
 
   test('Claude normalization omits thinking blocks', async () => {

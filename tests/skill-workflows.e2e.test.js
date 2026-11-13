@@ -1,8 +1,37 @@
 const { spawnSync } = require('child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 
-jest.setTimeout(30000);
+jest.setTimeout(120000);
+
+let fixtureRoot;
+let fixtureProject;
+beforeAll(() => {
+  fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ambiance-skill-workflows-'));
+  fixtureProject = path.join(fixtureRoot, 'project');
+  fs.mkdirSync(path.join(fixtureProject, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(fixtureProject, 'package.json'),
+    JSON.stringify({ name: 'workflow-fixture', version: '1.0.0' })
+  );
+  fs.writeFileSync(
+    path.join(fixtureProject, 'src', 'service.ts'),
+    'export function runService() { return "architecture fixture"; }\n'
+  );
+  fs.writeFileSync(
+    path.join(fixtureProject, 'README.md'),
+    '# Architecture\nThe service implements the local application.\n'
+  );
+});
+afterAll(() => {
+  if (
+    path.dirname(fixtureRoot) !== os.tmpdir() ||
+    !path.basename(fixtureRoot).startsWith('ambiance-skill-workflows-')
+  )
+    throw new Error('Unexpected workflow fixture');
+  fs.rmSync(fixtureRoot, { recursive: true, force: true });
+});
 
 const SKILLS_DIR = path.join(process.cwd(), 'skills', 'ambiance');
 const WORKFLOWS_DIR = path.join(SKILLS_DIR, 'workflows');
@@ -13,20 +42,21 @@ function runCli(args, extraEnv) {
     NODE_ENV: 'production',
     LOG_LEVEL: 'error',
     USE_LOCAL_EMBEDDINGS: 'false',
+    USE_OPENAI_EMBEDDINGS: 'false',
+    LOCAL_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
+    LOCAL_STORAGE_PATH: path.join(fixtureRoot, 'storage'),
     ...(extraEnv || {}),
   };
 
   delete env.WORKSPACE_FOLDER;
   delete env.AMBIANCE_BASE_DIR;
 
-  const result = spawnSync(
-    process.execPath,
-    ['-r', 'ts-node/register', 'src/cli.ts', ...args],
-    {
-      encoding: 'utf8',
-      env,
-    }
-  );
+  const result = spawnSync(process.execPath, ['-r', 'ts-node/register', 'src/cli.ts', ...args], {
+    encoding: 'utf8',
+    env,
+    timeout: 60000,
+    windowsHide: true,
+  });
 
   if (result.error) {
     const details = [
@@ -75,7 +105,7 @@ describe('Skill workflows execute through CLI', () => {
     expect(capabilities.workflows.length).toBeGreaterThan(0);
 
     const vars = {
-      projectPath: process.cwd(),
+      projectPath: fixtureProject,
       query: 'High-level architecture overview',
       logText: 'TypeError undefined',
     };

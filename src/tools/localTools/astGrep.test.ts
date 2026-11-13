@@ -10,9 +10,25 @@
  *   - astGrep validation functions
  */
 
-import { validateAstGrepPattern } from './astGrep';
+import { validateAstGrepFilePattern, validateAstGrepPattern } from './astGrep';
 
 describe('AST-Grep Pattern Validation', () => {
+  describe('File scope validation', () => {
+    test('accepts literal relative files and directories', () => {
+      expect(validateAstGrepFilePattern('src')).toEqual({ isValid: true });
+      expect(validateAstGrepFilePattern('src/server.ts')).toEqual({ isValid: true });
+    });
+
+    test('rejects wildcard globs that ast-grep would treat as literal paths', () => {
+      const result = validateAstGrepFilePattern('src/**/*.ts');
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('does not expand wildcard globs');
+      expect(result.suggestions).toContain(
+        'Pass a literal relative file or directory such as "src" or "src/server.ts"'
+      );
+    });
+  });
+
   describe('Valid Patterns', () => {
     test('should accept complete function patterns', () => {
       const result = validateAstGrepPattern('function $NAME($ARGS) { $BODY }');

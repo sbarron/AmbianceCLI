@@ -410,6 +410,11 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
         description: 'Override the read-only Codex session discovery root.',
       },
       {
+        name: 'AMBIANCE_CODEX_SESSION_INDEX',
+        defaultValue: '~/.codex/session_index.jsonl',
+        description: 'Override the Codex UI title metadata index.',
+      },
+      {
         name: 'AMBIANCE_CLAUDE_PROJECTS_DIR',
         defaultValue: '~/.claude/projects',
         description: 'Override the read-only Claude session discovery root.',
@@ -422,7 +427,7 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
       {
         name: 'AMBIANCE_HANDOFF_CACHE_DIR',
         defaultValue: '~/.ambiance/cache',
-        description: 'Override the incremental session catalog cache root.',
+        description: 'Override the incremental session catalog and search cache root.',
       },
     ],
   },
@@ -844,7 +849,7 @@ function showCommandHelp(command: string): void {
       '',
       ...common,
       '  --language <lang>      typescript | javascript | python | ...',
-      '  --file-pattern <glob>  Narrow search scope (recommended while iterating patterns)',
+      '  --file-pattern <path>  Literal relative file or directory; wildcard globs are unsupported',
       '  --max-matches <n>      Limit returned matches (default: 100)',
       '  --rule-path <file>     Use an ast-grep rule file instead of --pattern',
       '  --rule-yaml <yaml>     Inline ast-grep rule (YAML/JSON text)',
@@ -857,12 +862,14 @@ function showCommandHelp(command: string): void {
       '  function $NAME($ARGS) { $BODY }',
       '  import $NAME from "$MODULE"',
       '  const $NAME = ($ARGS) => $BODY',
+      '  app.delete($PATH, $HANDLER)',
       '  def ',
       '  class $NAME:',
       '',
       'Common pattern mistakes:',
       '  Do not use regex: /foo.*/, a|b, .*',
       '  Do not use overly-ambiguous fragments: function $FUNC',
+      '  Do not use identifier fragments for substring search: revok',
       '',
       'PowerShell tip:',
       "  Use single quotes to prevent $ expansion, e.g. 'function $NAME($ARGS) { $BODY }'",
@@ -951,6 +958,7 @@ function showCommandHelp(command: string): void {
       '',
       'Usage:',
       '  ambiance handoff [list] [--source codex,claude] [--limit <n>] [--json]',
+      '  ambiance handoff search <keywords> [--all-projects] [--limit <n>] [--json]',
       '  ambiance handoff create <number> [--compact] [--max-tokens <n>] [--json]',
       '  ambiance handoff create --session-id <id> [--compact] [--json]',
       '  ambiance handoff show <handoff-id> [--json]',
@@ -959,6 +967,7 @@ function showCommandHelp(command: string): void {
       ...common,
       '  --source <sources>       codex, claude, or comma-separated values',
       '  --all-projects           Do not filter sessions by current project',
+      '  --include-current        Include the active Codex task in discovery results',
       '  --list-id <id>           Reject numbered selection if the list changed',
       '  --compact                Target a 2,000-token handoff (default: 6,000)',
       '  --max-tokens <n>         Override the handoff token budget',
@@ -969,6 +978,7 @@ function showCommandHelp(command: string): void {
       '',
       'Examples:',
       '  ambiance handoff',
+      '  ambiance handoff search "Temporal cancellation" --all-projects --limit 10',
       '  ambiance handoff create 2 --compact',
       '  ambiance handoff create --session-id 019f... --max-tokens 4000 --json',
       '  ambiance handoff evidence <id> --tests --json',
@@ -1157,7 +1167,9 @@ async function executeToolCommand(
 
         const parsedArgs = parseToolSpecificArgs(toolArgs, allowedKeys);
         result = await handleFileSummary({
-          filePath,
+          filePath: globalOptions.projectPath
+            ? path.resolve(globalOptions.projectPath, filePath)
+            : filePath,
           format: resolveToolFormat(globalOptions, 'structured'),
           ...parsedArgs,
         });
@@ -1581,6 +1593,8 @@ async function executeToolCommand(
           'source',
           'limit',
           'allProjects',
+          'includeCurrent',
+          'query',
           'sessionId',
           'listId',
           'compact',
@@ -1610,7 +1624,11 @@ async function executeToolCommand(
         const shorthandSelection = first && /^\d+$/.test(first) ? Number(first) : undefined;
         const action = shorthandSelection
           ? 'create'
-          : first === 'create' || first === 'show' || first === 'evidence' || first === 'list'
+          : first === 'create' ||
+              first === 'show' ||
+              first === 'evidence' ||
+              first === 'search' ||
+              first === 'list'
             ? first
             : 'list';
         const selectionToken =
@@ -1618,6 +1636,12 @@ async function executeToolCommand(
         const selection =
           selectionToken && /^\d+$/.test(selectionToken) ? Number(selectionToken) : undefined;
         const identifier = action === 'show' || action === 'evidence' ? positional[1] : undefined;
+        const searchQuery =
+          action === 'search'
+            ? typeof parsed.query === 'string'
+              ? parsed.query
+              : positional.slice(1).join(' ').trim()
+            : undefined;
         const sessionId =
           typeof parsed.sessionId === 'string'
             ? parsed.sessionId
@@ -1637,6 +1661,14 @@ async function executeToolCommand(
           exitWithError({
             command: 'handoff',
             message: `handoff ${action} requires a handoff identifier`,
+            options: globalOptions,
+            exitCode: EXIT_CODES.USAGE_ERROR,
+          });
+        }
+        if (action === 'search' && !searchQuery) {
+          exitWithError({
+            command: 'handoff',
+            message: 'handoff search requires keywords or --query <keywords>',
             options: globalOptions,
             exitCode: EXIT_CODES.USAGE_ERROR,
           });
@@ -1668,6 +1700,8 @@ async function executeToolCommand(
             sources: parseHandoffSources(parsed.source),
             allProjects: parsed.allProjects === true,
             limit: typeof parsed.limit === 'number' ? parsed.limit : undefined,
+            includeCurrent: parsed.includeCurrent === true,
+            query: searchQuery,
             selection,
             sessionId,
             listId: typeof parsed.listId === 'string' ? parsed.listId : undefined,

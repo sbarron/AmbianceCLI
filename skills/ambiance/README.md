@@ -55,8 +55,8 @@ ambiance skill verify --json
 | Understand known symbols | `context "<symbols>" --no-embeddings` | Focused deterministic evidence | No |
 | Navigate to exact locations | `context "<query>" --format index --no-embeddings` | Low-token file:line targets | No |
 | Debug an error | `debug "<log>"` | Extract context from error logs | Optional |
-| Find AST structures | `grep "<pattern>"` | Structural/capture-based search after index navigation | No |
-| Fill exact text details | native `rg -n "<term>"` | String-level verification in files selected by index/grep | No |
+| Find AST structures | `grep "<pattern>"` | Complete code-shaped structural search after index navigation | No |
+| Find literals, fragments, comments, regex | host `rg`/content search | String-level verification in selected roots/files | No |
 | Analyze frontend | `frontend` | UI component analysis | No |
 | Single file summary | `summary <file>` | Quick file overview | No |
 | Manage embeddings | `embeddings <action>` | Setup, maintenance, status checks | N/A |
@@ -70,8 +70,9 @@ Use this order for agent search decisions:
 1. Known identifiers: run a deterministic `context --format index --no-embeddings` query.
 2. Unknown vocabulary or cross-system behavior: run one bounded `context --format index --embeddings` semantic frontier.
 3. Convert semantic chunk symbols into one deterministic context query.
-4. Use `grep`, `summary`, and native `rg -n` only for the selected files and ranges.
-5. Check one competing module or negative hypothesis before stopping.
+4. Use structural `grep`, `summary`, bounded host text search, and exact range reads on selected files.
+5. Trace registration/callers, authorization, effects, consumers, and relevant failure tests.
+6. Check one competing module or negative hypothesis before stopping.
 
 Use at most one bounded search scout after these steps leave a specific unresolved question. Multi-agent search is not the default navigation strategy.
 
@@ -375,6 +376,10 @@ ambiance debug "TypeError: Cannot read property 'token' of undefined at auth.ts:
 
 **Purpose**: Find code patterns using Abstract Syntax Tree matching.
 
+This is structural search, not substring or regex search. A bare identifier matches a whole syntax
+node; `revok` does not find identifiers containing that fragment. Regex literals, `.*`, and `a|b`
+alternation are not valid basic AST patterns. Use complete code-shaped syntax:
+
 **Usage**:
 ```bash
 ambiance grep "function \$NAME(\$ARGS) { \$BODY }" \
@@ -386,13 +391,21 @@ ambiance grep --rule-path ./rules/no-console.yml \
 
 # Rule-mode (inline JSON)
 ambiance grep --rule-json '{"id":"no-console","language":"typescript","rule":{"pattern":"console.$METHOD($ARGS)"}}' \
-  --json --project-path . --file-pattern "src/**/*.ts"
+  --json --project-path . --file-pattern "src"
 ```
 
 ```powershell
 # PowerShell: prefer single quotes so $ metavariables are not expanded
 ambiance grep 'function $NAME($ARGS) { $BODY }' --json --project-path . --language typescript
+
+# Route registration example; file pattern is a literal relative directory, not a glob
+ambiance grep 'app.delete($PATH, $HANDLER)' --json --project-path . \
+  --language typescript --file-pattern worker/src/routes --max-matches 25
 ```
+
+Use the host's bounded text/content search for endpoint literals, identifier fragments, comments, or
+regex. Follow every candidate with targeted line-range reads. A truncated read covers only that range;
+read a discovered test's setup and assertions before making a coverage claim.
 
 **Output Schema**:
 ```json
@@ -422,6 +435,10 @@ ambiance grep 'function $NAME($ARGS) { $BODY }' --json --project-path . --langua
 - Locate specific code structures
 - Refactoring analysis
 - Not recommended as first-pass text search in embedding-enabled sessions; run after index navigation
+
+Zero structural matches do not establish absence. Verify the search semantics and scope, then use
+appropriate text search and exact reads. Missing semantic targets, truncated output, or an exhausted
+budget are unresolved evidence gaps; report what remains unverified.
 
 ### `frontend` - Frontend Pattern Analysis
 
@@ -535,18 +552,22 @@ ambiance packs get --name "auth-system" --json
 
 ### `handoff` - Portable Agent Continuity
 
-**Purpose**: Recover locally retained Codex and Claude work as a compact, evidence-linked handoff.
+**Purpose**: Discover or search locally retained Codex and Claude work, then recover it as a compact,
+evidence-linked handoff.
 The source transcript is read-only; the generated handoff is stored under `~/.ambiance/handoffs`
 unless `AMBIANCE_HANDOFFS_DIR` or `--handoffs-dir` overrides it.
 
 ```bash
 # Numbered titles scoped to the current project
-ambiance handoff list --json --project-path ./
+ambiance handoff list --limit 10 --json --project-path ./
+
+# Local BM25 search over normalized conversation text
+ambiance handoff search "Temporal cancellation" --limit 10 --json --project-path ./
 
 # Compact recovery for another model or agent
 ambiance handoff create 2 --compact --json --project-path ./
 
-# Stable automation after parsing the list
+# Stable automation after parsing a list or search result
 ambiance handoff create --session-id <session-id> --max-tokens 4000 --json --project-path ./
 
 # Inspect retained verification evidence without loading the whole transcript
@@ -554,10 +575,19 @@ ambiance handoff evidence <handoff-id> --tests --json
 ```
 
 `--compact` targets 2,000 tokens; standard mode targets 6,000. Use `--max-tokens` to override.
-The first `handoff create` in a fresh environment may take ~30s while the local embedding model
-loads for code-evidence refresh; subsequent runs complete in a few seconds.
+Handoff creation does not create, refresh, or query the project embedding index, so a dirty or stale
+embedding index cannot turn recovery into an implicit maintenance job. If the result warns that
+refreshed symbol-level code evidence was unavailable, use its relevant files and exact identifiers in
+one bounded `context --no-embeddings --format index` query.
+Codex titles come from its local UI metadata when available; Claude titles come from provider session
+metadata. The active Codex task is excluded when `CODEX_THREAD_ID` is available unless
+`--include-current` is supplied. Add `--all-projects` for cross-checkout discovery.
 The JSON list includes both a human-friendly `selection` and stable `sessionId`. Pass the returned
-`listId` to `handoff create --list-id <id>` when numbered selection must fail safely if the list changes.
+`listId` to `handoff create --list-id <id>` when numbered selection must fail safely if the list
+changes. Search results include a query-relative BM25 score normalized to 0-1, a matching snippet, and
+a stable `sessionId`; retrieve those with `handoff create --session-id <id>`.
+Search incrementally indexes only changed provider JSONL files in a local FTS5 cache. It retains
+redacted user, assistant, and summary text while omitting reasoning and noisy tool evidence.
 Raw transcript copying is opt-in through `--include-transcript` because provider logs may contain secrets.
 
 ## Parameter Guidelines
@@ -782,7 +812,8 @@ ambiance context "nonexistent feature" --json --project-path ./
 }
 ```
 
-**Agent action**: Rephrase query, try `hints` for project overview, or use `grep` with patterns
+**Agent action**: Treat this as an unresolved evidence gap. Rephrase by behavior boundary, verify
+index health and scope, then use a complete AST pattern or bounded host text search as appropriate.
 
 #### Stale Embeddings
 
@@ -986,6 +1017,7 @@ Expected output:
       "handoff-create.json",
       "handoff-evidence.json",
       "handoff-list.json",
+      "handoff-search.json",
       "handoff-show.json"
     ]
   }

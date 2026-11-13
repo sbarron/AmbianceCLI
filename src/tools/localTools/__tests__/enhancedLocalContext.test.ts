@@ -10,6 +10,7 @@
  */
 
 import {
+  buildDslQueriesForPlan,
   deduplicateJumpTargets,
   extractExplicitSymbolTokens,
   gatherSemanticChunkCandidates,
@@ -150,6 +151,15 @@ export function authenticateUser(req: any, res: any, next: any) {
 // ===== UNIT TESTS =====
 
 describe('Enhanced Local Context - Unit Tests', () => {
+  it('treats punctuation in prose as literals while preserving explicit regex queries', () => {
+    const explicit = { kind: 'symbol' as const, name: /requested[A-Z]+/ };
+    const literal = 'get(key,';
+    const queries = buildDslQueriesForPlan('auto', `${literal} [items] a+b value? path.to.file`, [explicit]);
+    const generated = queries.find(q => q.kind === 'symbol' && q.name instanceof RegExp && q.name.test(literal));
+    expect(generated).toBeDefined();
+    expect(generated?.kind === 'symbol' && (generated.name as RegExp).test('getXkey,' )).toBe(false);
+    expect(queries).toContain(explicit);
+  });
   describe('AST Query Engine', () => {
     it('should find import queries correctly', async () => {
       const queries = [{ kind: 'import' as const, source: /better-sqlite3/ }];

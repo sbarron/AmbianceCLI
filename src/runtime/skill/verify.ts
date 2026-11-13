@@ -79,7 +79,7 @@ const recipeSchema = z
   .object({
     name: z.string().min(1),
     description: z.string().min(1).optional(),
-    defaults: z.record(z.any()).optional(),
+    defaults: z.record(z.string(), z.any()).optional(),
     command: z.string().min(1),
     args: z.array(z.string()).default([]),
   })

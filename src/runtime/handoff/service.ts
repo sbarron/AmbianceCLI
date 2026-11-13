@@ -16,11 +16,13 @@ import type { HandoffEventKind, HandoffSource, HandoffV1 } from './types';
 import { hashText } from './utils';
 
 export interface HandoffCommandArgs {
-  action?: 'list' | 'create' | 'show' | 'evidence';
+  action?: 'list' | 'search' | 'create' | 'show' | 'evidence';
   projectPath: string;
   sources?: HandoffSource[];
   allProjects?: boolean;
   limit?: number;
+  includeCurrent?: boolean;
+  query?: string;
   selection?: number;
   sessionId?: string;
   listId?: string;
@@ -80,6 +82,30 @@ function formatSessionList(result: ReturnType<typeof listSessions>): string {
   return lines.join('\n').trimEnd();
 }
 
+function formatSearchResults(
+  result: Awaited<ReturnType<typeof import('./search').searchSessions>>
+): string {
+  if (result.results.length === 0) {
+    return `No Codex or Claude sessions matched "${result.query}".`;
+  }
+  const lines = [`Conversation matches for "${result.query}":`, ''];
+  for (const session of result.results) {
+    lines.push(
+      `${session.selection}. ${session.title}`,
+      `   ${session.source} | score ${session.score.toFixed(6)} | updated ${formatAge(session.updatedAt)}`,
+      `   ${session.snippet}`,
+      `   id: ${session.sessionId}`,
+      ''
+    );
+  }
+  lines.push(
+    `Retrieve with: ambiance handoff create --session-id <id> --compact${
+      result.projectPath ? '' : ' --all-projects'
+    }`
+  );
+  return lines.join('\n').trimEnd();
+}
+
 function parseLineRange(value: string | undefined): { start: number; end: number } | undefined {
   if (!value) return undefined;
   const match = value.trim().match(/^(\d+)(?:\.\.|-|:)(\d+)$/);
@@ -96,6 +122,7 @@ async function createHandoff(args: HandoffCommandArgs): Promise<Record<string, u
     sources: args.sources,
     allProjects: args.allProjects,
     limit: args.sessionId ? Math.max(args.limit ?? 20, 10_000) : args.limit,
+    includeCurrent: args.sessionId ? true : args.includeCurrent,
     selection: args.selection,
     sessionId: args.sessionId,
     listId: args.listId,
@@ -193,6 +220,7 @@ export async function handleHandoffCommand(
       sources: args.sources,
       allProjects: args.allProjects,
       limit: args.limit,
+      includeCurrent: args.includeCurrent,
     });
     return {
       success: true,
@@ -200,6 +228,26 @@ export async function handleHandoffCommand(
       action: 'list',
       ...listed,
       content: formatSessionList(listed),
+    };
+  }
+
+  if (action === 'search') {
+    if (!args.query) throw new Error('handoff search requires a query');
+    const { searchSessions } = await import('./search');
+    const searched = await searchSessions({
+      query: args.query,
+      projectPath: args.projectPath,
+      sources: args.sources,
+      allProjects: args.allProjects,
+      limit: args.limit,
+      includeCurrent: args.includeCurrent,
+    });
+    return {
+      success: true,
+      timestamp: new Date().toISOString(),
+      action: 'search',
+      ...searched,
+      content: formatSearchResults(searched),
     };
   }
 

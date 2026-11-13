@@ -1,4 +1,5 @@
 const mockGlobby = jest.fn();
+const { EMBEDDING_CHUNK_LAYOUT_VERSION } = require('../src/local/embeddingDefaults');
 const mockStorage = {
   listProjectFiles: jest.fn(),
   getRecentlyUpdatedFiles: jest.fn(),
@@ -68,6 +69,7 @@ describe('embedding stale checks', () => {
         projectId: 'project-1',
         path: 'src/index.ts',
         hash: 'hash',
+        chunkLayoutVersion: EMBEDDING_CHUNK_LAYOUT_VERSION,
         lastModified: new Date('2026-01-01T00:00:00.000Z'),
         fileSize: 100,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -109,6 +111,7 @@ describe('embedding stale checks', () => {
         projectId: 'project-1',
         path: 'src/index.ts',
         hash: 'hash',
+        chunkLayoutVersion: EMBEDDING_CHUNK_LAYOUT_VERSION,
         lastModified: new Date('2026-01-01T00:00:00.000Z'),
         fileSize: 100,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -137,5 +140,35 @@ describe('embedding stale checks', () => {
       filePath: 'src/index.ts',
       reason: 'Tracked file has zero embedding chunks',
     });
+  });
+  test('marks unchanged legacy layouts stale even when embedding chunks exist', async () => {
+    const fs = require('fs');
+    const time = new Date('2026-01-01T00:00:00.000Z');
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({
+      size: 100,
+      mtime: time,
+      isFile: () => true,
+      isDirectory: () => false,
+    });
+    mockGlobby.mockResolvedValue(['src/index.ts']);
+    mockStorage.listProjectFiles.mockResolvedValue([
+      {
+        id: 'file-index',
+        projectId: 'project-1',
+        path: 'src/index.ts',
+        hash: 'hash',
+        lastModified: time,
+        fileSize: 100,
+        chunkLayoutVersion: 1,
+        createdAt: time,
+        updatedAt: time,
+      },
+    ]);
+    const { checkStaleFiles } = require('../src/runtime/embeddings/manageEmbeddings');
+    const result = await checkStaleFiles({ projectPath: 'C:\\project', autoUpdate: false });
+    expect(result.staleCount).toBe(1);
+    expect(result.newCount).toBe(0);
+    expect(result.incompleteCount).toBe(0);
   });
 });

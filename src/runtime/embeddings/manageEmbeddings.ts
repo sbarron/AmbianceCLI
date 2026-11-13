@@ -12,6 +12,7 @@ import { logger } from '../../utils/logger';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import { LocalEmbeddingStorage, type EmbeddingChunk } from '../../local/embeddingStorage';
 import { LocalEmbeddingGenerator } from '../../local/embeddingGenerator';
+import { DEFAULT_EMBEDDING_CHUNK_SIZE, EMBEDDING_CHUNK_LAYOUT_VERSION } from '../../local/embeddingDefaults';
 import { ProjectIdentifier, loadIgnorePatterns } from '../../local/projectIdentifier';
 import {
   listProjectsWithEmbeddings,
@@ -774,16 +775,11 @@ export async function updateProjectEmbeddings(args: {
     }
 
     const { LocalEmbeddingGenerator } = await import('../../local/embeddingGenerator');
-    const storage = quantization ? new LocalEmbeddingStorage() : undefined;
-
-    // If quantization override specified, create generator with configured storage
-    if (quantization && storage) {
-      storage.setQuantizationMode(quantization as any);
-    }
-
-    const embeddingGenerator = storage
-      ? new LocalEmbeddingGenerator(storage)
-      : new LocalEmbeddingGenerator();
+    const storage = new LocalEmbeddingStorage();
+    const storedFormat = await storage.getStoredEmbeddingFormat(projectId);
+    const refreshFormat = quantization || storedFormat;
+    if (refreshFormat) storage.setQuantizationMode(refreshFormat as any);
+    const embeddingGenerator = new LocalEmbeddingGenerator(storage);
 
     const result = await embeddingGenerator.updateProjectEmbeddings(
       projectId,
@@ -805,8 +801,7 @@ export async function updateProjectEmbeddings(args: {
     });
 
     const hadErrors = result.errors.length > 0;
-    const nothingUpdated = result.processedFiles === 0 && result.embeddings === 0;
-    const success = !(hadErrors && nothingUpdated);
+    const success = !hadErrors;
 
     // Record sync time for auto-sync tracking (only if successful)
     if (success) {
@@ -1169,7 +1164,8 @@ export async function checkStaleFiles(args: {
       // If disk file is newer than database, or its size differs, it's stale.
       // Size catches edits when filesystem timestamp precision or restoration
       // causes mtime comparisons to be inconclusive.
-      if (diskTimestamp > dbTimestamp || diskStats.size !== dbFile.fileSize) {
+      if (diskTimestamp > dbTimestamp || diskStats.size !== dbFile.fileSize ||
+          dbFile.chunkLayoutVersion !== EMBEDDING_CHUNK_LAYOUT_VERSION) {
         const timeDiff = diskTimestamp.getTime() - dbTimestamp.getTime();
         staleFiles.push({
           filePath: dbFile.path,
@@ -1249,7 +1245,9 @@ export async function checkStaleFiles(args: {
       updateResult = await updateProjectEmbeddings({
         projectPath: resolvedProjectPath,
         files: filesToUpdate,
-        force: true,
+        // Explicit files are refreshed regardless of mtime. Keep input reuse on
+        // so a layout repair only infers vectors missing from the legacy index.
+        force: false,
         batchSize,
       });
 
@@ -1609,7 +1607,7 @@ async function handleSetWorkspace(
           {
             batchSize: 10,
             rateLimit: 500,
-            maxChunkSize: 1500,
+            maxChunkSize: DEFAULT_EMBEDDING_CHUNK_SIZE,
             filePatterns: [
               '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
             ],

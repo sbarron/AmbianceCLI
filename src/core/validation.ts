@@ -86,7 +86,7 @@ export const SearchContextInputSchema = z
 export const ValidateRequestInputSchema = z
   .object({
     toolName: z.string().min(1),
-    arguments: z.record(z.any()).default({}),
+    arguments: z.record(z.string(), z.any()).default({}),
   })
   .describe('Request validation parameters');
 
@@ -209,9 +209,9 @@ export const StructuredErrorSchema = z
   .object({
     code: z.string(),
     message: z.string(),
-    context: z.record(z.any()),
+    context: z.record(z.string(), z.any()),
     suggestion: z.string().optional(),
-    examples: z.record(z.any()).optional(),
+    examples: z.record(z.string(), z.any()).optional(),
   })
   .describe('Structured error response');
 
@@ -225,7 +225,7 @@ export class ValidationHelper {
     } catch (error) {
       if (error instanceof z.ZodError) {
         // Get the first error message for the main error message
-        const firstError = error.errors[0];
+        const firstError = error.issues[0];
         const primaryMessage = firstError?.message || `Invalid input for tool ${toolName}`;
 
         const structuredError = {
@@ -233,7 +233,7 @@ export class ValidationHelper {
           message: primaryMessage,
           context: {
             tool: toolName,
-            errors: error.errors.map(e => ({
+            errors: error.issues.map(e => ({
               field: e.path.join('.'),
               message: e.message,
               code: e.code,
@@ -271,7 +271,7 @@ export class ValidationHelper {
     } catch (error) {
       if (error instanceof z.ZodError) {
         logger.error(`Output validation failed for ${toolName}`, {
-          errors: error.errors,
+          errors: error.issues,
           data: JSON.stringify(data, null, 2).substring(0, 500) + '...',
         });
 
@@ -282,7 +282,7 @@ export class ValidationHelper {
           message: `Tool ${toolName} produced invalid output`,
           context: {
             tool: toolName,
-            errors: error.errors.map(e => ({
+            errors: error.issues.map(e => ({
               field: e.path.join('.'),
               message: e.message,
               code: e.code,

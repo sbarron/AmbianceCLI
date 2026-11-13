@@ -190,6 +190,25 @@ describe('CLI JSON contracts', () => {
     expect(payload.error).toContain('Unknown grep option');
   });
 
+  test('grep rejects wildcard file scopes instead of returning a false zero', () => {
+    const res = runCli([
+      'grep',
+      '--json',
+      '--project-path',
+      process.cwd(),
+      '--language',
+      'typescript',
+      '--file-pattern',
+      'src/**/*.ts',
+      'app.delete($PATH, $HANDLER)',
+    ]);
+    expect(res.status).toBe(1);
+    const payload = parseJsonStdout(res.stdout);
+    schemas.errorEnvelopeSchema.parse(payload);
+    expect(payload.command).toBe('grep');
+    expect(payload.error).toContain('does not expand wildcard globs');
+  });
+
   test('grep validates --rule-json input before execution', () => {
     const res = runCli([
       'grep',
@@ -284,7 +303,7 @@ describe('CLI JSON contracts', () => {
     expect(payload.exitCode).toBe(2);
   });
 
-  test('handoff list/create/show/evidence --json works end-to-end with numbered selection', () => {
+  test('handoff list/search/create/show/evidence --json works end-to-end', () => {
     const root = path.join(
       process.cwd(),
       'test-storage',
@@ -324,6 +343,24 @@ describe('CLI JSON contracts', () => {
     const listed = parseJsonStdout(listRes.stdout);
     schemas.handoffListSchema.parse(listed);
     expect(listed.sessions[0]).toMatchObject({ selection: 1, sessionId: 'contract-session' });
+
+    const searchRes = runCli(
+      [
+        'handoff',
+        'search',
+        'verified contract',
+        '--source',
+        'codex',
+        '--project-path',
+        process.cwd(),
+        '--json',
+      ],
+      env
+    );
+    expect(searchRes.status).toBe(0);
+    const searched = parseJsonStdout(searchRes.stdout);
+    schemas.handoffSearchSchema.parse(searched);
+    expect(searched.results[0]).toMatchObject({ sessionId: 'contract-session' });
 
     const createRes = runCli(
       [

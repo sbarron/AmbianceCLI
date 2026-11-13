@@ -35,6 +35,7 @@ import {
   EmbeddingResult,
 } from './localEmbeddingProvider';
 import { ProjectIdentifier } from './projectIdentifier';
+import { DEFAULT_EMBEDDING_CHUNK_SIZE, EMBEDDING_CHUNK_LAYOUT_VERSION } from './embeddingDefaults';
 
 /**
  * Simple semaphore implementation for concurrency control
@@ -83,6 +84,8 @@ export interface GenerationProgress {
   embeddings: number;
   errors: string[];
   currentFile?: string;
+  reusedEmbeddings?: number;
+  deduplicatedEmbeddings?: number;
 }
 
 export interface GenerationOptions extends ChunkingOptions {
@@ -100,6 +103,7 @@ export class LocalEmbeddingGenerator {
   private localProvider: LocalEmbeddingProvider | null = null;
   private storage: LocalEmbeddingStorage;
   private treeSitter: TreeSitterProcessor | null = null;
+  private readonly treeSitterReady: Promise<void>;
   private embeddingModel: string;
   private ambianceApiKey?: string;
 
@@ -153,7 +157,7 @@ export class LocalEmbeddingGenerator {
     logger.info('✅ Local embedding provider (transformers.js) available as default');
 
     // Initialize TreeSitter for intelligent chunking
-    this.initializeTreeSitter();
+    this.treeSitterReady = this.initializeTreeSitter();
   }
 
   private async initializeTreeSitter(): Promise<void> {
@@ -551,15 +555,10 @@ export class LocalEmbeddingGenerator {
       fileSize: fileStats.size,
       language,
       lineCount: content.split('\n').length,
+      chunkLayoutVersion: EMBEDDING_CHUNK_LAYOUT_VERSION,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-
-    await this.storage.storeFileMetadata(fileMetadata);
-
-    // Clean up any existing embeddings for this file before generating new ones
-    // This prevents chunk accumulation when files are updated
-    await this.storage.deleteEmbeddingsByFile(fileId);
 
     // Chunk the content
     const chunks = await this.chunkContent(content, filePath, options);
@@ -596,119 +595,88 @@ export class LocalEmbeddingGenerator {
     const batchSize =
       options.batchSize || parseInt(process.env.EMBEDDING_BATCH_SIZE || '', 10) || 64;
 
-    // Create batches
-    const batches: string[][] = [];
-    for (let i = 0; i < chunks.length; i += batchSize) {
-      const batch = chunks.slice(i, i + batchSize);
-      const batchContents = batch
-        .map(chunk => {
-          if (
-            chunk.content !== undefined &&
-            chunk.content !== null &&
-            typeof chunk.content === 'string'
-          ) {
-            // Prepend file path to help the model associate chunks with their location
-            // This enables searching by filename or path, even for fallback chunks without symbols
-            return `File: ${relativePath}\n\n${chunk.content}`;
-          }
-          return null;
-        })
-        .filter(content => content !== null) as string[];
-
-      if (batchContents.length > 0) {
-        batches.push(batchContents);
-      }
-    }
-
+    let batches: string[][] = [];
     try {
-      // Debug batch generation for Python files
-      if (language === 'python') {
-        logger.debug('🐍 Python file batch generation', {
-          filePath,
-          batchCount: batches.length,
-          batchSizes: batches.map(batch => batch.length),
-          batchPreviews: batches.map(batch =>
-            batch.map(text => text.substring(0, 50) + (text.length > 50 ? '...' : ''))
-          ),
-          options: {
-            parallelMode: options.parallelMode,
-            maxConcurrency: options.maxConcurrency,
-            batchSize: options.batchSize,
-          },
-        });
-      }
-
-      // Generate embeddings for all batches (parallel or sequential)
-      const batchResults = await this.generateBatchesEmbeddings(batches, options);
-
-      // Store embeddings from all batches
-      let batchIndex = 0;
-      for (const batchEmbeddings of batchResults) {
-        const batch = chunks.slice(batchIndex * batchSize, (batchIndex + 1) * batchSize);
-
-        // Store embeddings for this batch
-        for (let j = 0; j < batch.length; j++) {
-          const chunk = batch[j];
-          const embedding = batchEmbeddings[j];
-
-          // Debug embedding results for Python files
-          if (language === 'python') {
-            logger.debug('🐍 Python file embedding result', {
-              filePath,
-              chunkIndex: chunk.index,
-              embeddingLength: embedding.length,
-              embeddingType: typeof embedding,
-              embeddingSample: embedding.slice(0, 5),
-              currentProvider: this.getCurrentProvider(),
-              embeddingMetadata: this.getEmbeddingMetadata(this.getCurrentProvider(), embedding),
-            });
-          }
-
-          // Determine embedding metadata based on current provider
-          const currentProvider = this.getCurrentProvider();
-          const embeddingMetadata = this.getEmbeddingMetadata(currentProvider, embedding);
-
-          const embeddingChunk: EmbeddingChunk = {
-            id: `${projectId}_${relativePath}_${chunk.index}`,
-            projectId,
-            fileId,
-            filePath: relativePath,
-            chunkIndex: chunk.index,
-            content: chunk.content,
-            embedding,
-            metadata: {
-              startLine: chunk.startLine,
-              endLine: chunk.endLine,
-              language,
-              symbols: chunk.symbols,
-              type: chunk.type,
-              ...embeddingMetadata,
-            },
-            hash: LocalEmbeddingStorage.generateContentHash(
-              chunk.content,
-              relativePath,
-              chunk.index
-            ),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          };
-
-          await this.storage.storeEmbedding(embeddingChunk);
-          fileProgress.embeddings++;
+      // Cache keys describe the exact inference input and local model settings,
+      // not chunk index or line coordinates, which may move after an edit.
+      const identity = this.getLocalInputIdentity();
+      const format = this.storage.getQuantizationMode?.();
+      const reusable = identity && !options.force && (format === 'float32' || format === 'int8')
+        ? (await this.storage.getFileEmbeddings(projectId, fileId)) || [] : [];
+      const cache = new Map<string, EmbeddingChunk>();
+      const dimensions = this.localProvider?.getModelInfo().dimensions;
+      for (const old of reusable) {
+        if (old.metadata.embeddingInputKey && old.metadata.embeddingDimensions === dimensions &&
+            old.metadata.embeddingFormat === format && !cache.has(old.metadata.embeddingInputKey)) {
+          cache.set(old.metadata.embeddingInputKey, old);
         }
-
-        fileProgress.processedChunks += batch.length;
-        logger.debug('Batch stored', {
-          file: relativePath,
-          batchIndex: batchIndex + 1,
-          batchSize: batch.length,
-          processedChunks: fileProgress.processedChunks,
-          totalChunks: fileProgress.totalChunks,
-          mode: options.parallelMode ? 'parallel' : 'sequential',
-        });
-
-        batchIndex++;
       }
+      const texts = chunks.map(chunk => `File: ${relativePath}\n\n${chunk.content}`);
+      const keyFor = (input: string, model = identity) => model
+        ? crypto.createHash('sha256').update(JSON.stringify([model, format, input])).digest('hex') : undefined;
+      const inputKeys = texts.map(text => keyFor(text));
+      const cached = inputKeys.map(key => {
+        return key ? cache.get(key) : undefined;
+      });
+      const pending = chunks.map((_, index) => index).filter(index => !cached[index]);
+      const inferenceGroups: number[][] = [];
+      const groupByInput = new Map<string, number>();
+      for (const index of pending) {
+        const key = inputKeys[index];
+        const group = key ? groupByInput.get(key) : undefined;
+        if (group === undefined) {
+          if (key) groupByInput.set(key, inferenceGroups.length);
+          inferenceGroups.push([index]);
+        } else {
+          inferenceGroups[group].push(index);
+        }
+      }
+      const uniquePending = inferenceGroups.map(group => group[0]);
+      batches = [];
+      for (let i = 0; i < uniquePending.length; i += batchSize) {
+        batches.push(uniquePending.slice(i, i + batchSize).map(index => texts[index]));
+      }
+      const generated = batches.length ? (await this.generateBatchesEmbeddings(batches, options)).flat() : [];
+      if (generated.length !== uniquePending.length || generated.some(vector => !Array.isArray(vector) ||
+          !vector.length || vector.some(value => !Number.isFinite(value)))) {
+        throw new Error('Incomplete or invalid embedding response; existing file index retained');
+      }
+      const finalIdentity = this.getLocalInputIdentity();
+      if (identity !== finalIdentity && (cached.some(Boolean) || uniquePending.length < pending.length)) {
+        throw new Error('Local model changed during reused-input refresh; retry with the current model');
+      }
+      const vectors: EmbeddingChunk['embedding'][] = cached.map(old => old?.embedding as EmbeddingChunk['embedding']);
+      inferenceGroups.forEach((group, position) => {
+        group.forEach(index => { vectors[index] = generated[position]; });
+      });
+
+      // Generate successfully before replacing the previous index or freshness stamp.
+      await this.storage.storeFileMetadata({ ...fileMetadata, chunkLayoutVersion: undefined });
+      await this.storage.deleteEmbeddingsByFile(fileId);
+      for (let index = 0; index < chunks.length; index++) {
+        const chunk = chunks[index], embedding = vectors[index];
+        const embeddingMetadata = Array.isArray(embedding)
+          ? this.getEmbeddingMetadata(this.getCurrentProvider(), embedding)
+          : { embeddingFormat: cached[index]!.metadata.embeddingFormat,
+              embeddingDimensions: cached[index]!.metadata.embeddingDimensions,
+              embeddingProvider: cached[index]!.metadata.embeddingProvider };
+        await this.storage.storeEmbedding({
+          id: `${projectId}_${relativePath}_${chunk.index}`, projectId, fileId, filePath: relativePath,
+          chunkIndex: chunk.index, content: chunk.content, embedding,
+          metadata: { startLine: chunk.startLine, endLine: chunk.endLine, language, symbols: chunk.symbols,
+            type: chunk.type, ...embeddingMetadata, embeddingInputKey: keyFor(texts[index], finalIdentity) },
+          hash: LocalEmbeddingStorage.generateContentHash(chunk.content, relativePath, chunk.index),
+          createdAt: new Date(), updatedAt: new Date(),
+        });
+        fileProgress.embeddings++;fileProgress.processedChunks++;
+      }
+      // Only a complete write is eligible to pass future layout freshness checks.
+      await this.storage.storeFileMetadata(fileMetadata);
+      fileProgress.reusedEmbeddings = cached.filter(Boolean).length;
+      fileProgress.deduplicatedEmbeddings = pending.length - uniquePending.length;
+      logger.debug('File embedding refresh complete', { file: relativePath,
+        generated: uniquePending.length, reused: fileProgress.reusedEmbeddings,
+        deduplicated: fileProgress.deduplicatedEmbeddings, total: chunks.length });
     } catch (error) {
       const errorMsg = `Failed to generate embeddings: ${error instanceof Error ? error.message : String(error)}`;
       fileProgress.errors.push(errorMsg);
@@ -720,6 +688,13 @@ export class LocalEmbeddingGenerator {
     }
 
     return fileProgress;
+  }
+
+  /** Remote-provider responses are deliberately excluded from persistent reuse. */
+  private getLocalInputIdentity(): string | undefined {
+    if (this.getCurrentProvider() !== 'local' || process.env.USE_OPENAI_EMBEDDINGS === 'true') return undefined;
+    if (!this.localProvider) this.localProvider = getDefaultLocalProvider();
+    return this.localProvider.getCacheIdentity?.();
   }
 
   /**
@@ -1246,7 +1221,8 @@ export class LocalEmbeddingGenerator {
       type: 'code' | 'comment' | 'docstring' | 'import' | 'export';
     }>
   > {
-    const maxChunkSize = options.maxChunkSize || 2000;
+    await this.treeSitterReady;
+    const maxChunkSize = options.maxChunkSize || DEFAULT_EMBEDDING_CHUNK_SIZE;
     const overlapSize = options.overlapSize || 100;
     const preferSymbolBoundaries = options.preferSymbolBoundaries !== false;
 
@@ -1336,7 +1312,12 @@ export class LocalEmbeddingGenerator {
       }
     }
 
-    return chunks.sort((a, b) => a.startLine - b.startLine);
+    // AST ordinals and split-chunk ordinals occupy different namespaces. Assign
+    // storage ordinals once, after expansion and sorting, so no chunk is replaced
+    // by a later chunk with the same ID. Inference reuse is keyed independently.
+    return chunks
+      .sort((a, b) => a.startLine - b.startLine)
+      .map((chunk, index) => ({ ...chunk, index }));
   }
 
   /**
@@ -1910,7 +1891,7 @@ export class LocalEmbeddingGenerator {
       force = false,
       batchSize = 10,
       rateLimit = 1000,
-      maxChunkSize = 1500,
+      maxChunkSize = DEFAULT_EMBEDDING_CHUNK_SIZE,
       filePatterns = [
         '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
       ],
@@ -1931,105 +1912,66 @@ export class LocalEmbeddingGenerator {
     };
 
     try {
-      // If specific files provided, process only those
-      if (files && files.length > 0) {
-        for (const relativeFilePath of files) {
-          try {
-            // ABSOLUTE FILTER: Reject any file with ignored patterns
-            if (
-              relativeFilePath.includes('dist') ||
-              relativeFilePath.includes('node_modules') ||
-              relativeFilePath.includes('.git') ||
-              relativeFilePath.includes('\\dist\\') ||
-              relativeFilePath.includes('/dist/') ||
-              relativeFilePath.includes('\\node_modules\\') ||
-              relativeFilePath.includes('/node_modules/') ||
-              (relativeFilePath.includes('\\') &&
-                (relativeFilePath.includes('.git') || relativeFilePath.includes('/.git')))
-            ) {
-              logger.debug(`🚫 Filtering out ignored file: ${relativeFilePath}`);
-              continue;
-            }
-
-            const fullPath = path.resolve(projectPath, relativeFilePath);
-            if (!fs.existsSync(fullPath)) {
-              logger.warn(`⚠️ File not found, skipping: ${relativeFilePath}`);
-              continue;
-            }
-
-            const fileResult = await this.processSingleFile(projectId, fullPath, projectPath, {
-              batchSize,
-              rateLimit,
-              maxChunkSize,
-            });
-
-            result.processedFiles++;
-            result.embeddings += fileResult.embeddings;
-            result.totalChunks += fileResult.chunks;
-          } catch (error) {
-            const errorMsg = `Failed to update embeddings for ${relativeFilePath}: ${error instanceof Error ? error.message : String(error)}`;
-            logger.error(`❌ ${errorMsg}`);
-            result.errors.push(errorMsg);
+      const normalize = (file: string) => file.replace(/\\/g, '/');
+      const tracked = await this.storage.listProjectFiles(projectId);
+      const byPath = new Map(tracked.map(file => [normalize(file.path), file]));
+      const requested = files?.length
+        ? files
+        : [
+            ...new Set([
+              ...(await this.getProjectFiles(projectPath, filePatterns)).map(file =>
+                path.relative(projectPath, file)
+              ),
+              ...tracked.map(file => file.path),
+            ]),
+          ];
+      for (const requestedPath of requested) {
+        try {
+          const fullPath = path.resolve(projectPath, requestedPath);
+          const relativePath = path.relative(path.resolve(projectPath), fullPath);
+          if (
+            !relativePath ||
+            relativePath === '..' ||
+            relativePath.startsWith('..' + path.sep) ||
+            path.isAbsolute(relativePath)
+          ) {
+            throw new Error('Update path must be a file inside the project');
           }
-        }
-      } else {
-        // Auto-detect changed files by comparing disk mtimes with stored file metadata mtimes.
-        logger.info('📋 No specific files provided, auto-detecting stale files from metadata');
-
-        const dbFiles = await this.storage.listProjectFiles(projectId);
-        const staleFiles: string[] = [];
-
-        for (const dbFile of dbFiles) {
-          const fullPath = path.join(projectPath, dbFile.path);
+          const key = normalize(relativePath);
+          const old = byPath.get(key);
           if (!fs.existsSync(fullPath)) {
+            if (old) {
+              await this.storage.deleteEmbeddingsByFile(old.id);
+              await this.storage.deleteFileMetadata(old.id);
+            }
             continue;
           }
-
-          try {
-            const diskStats = fs.statSync(fullPath);
-            if (diskStats.mtime > dbFile.lastModified) {
-              staleFiles.push(dbFile.path);
-            }
-          } catch (error) {
-            const errorMsg = `Failed to stat ${dbFile.path}: ${error instanceof Error ? error.message : String(error)}`;
-            logger.warn(errorMsg);
-            result.errors.push(errorMsg);
-          }
-        }
-
-        if (staleFiles.length === 0) {
-          logger.info('✅ No stale files detected for incremental embedding update', {
-            projectId,
-            trackedFiles: dbFiles.length,
+          if (key.split('/').some(part => ['dist', 'node_modules', '.git'].includes(part)))
+            continue;
+          const stat = fs.statSync(fullPath);
+          if (!stat.isFile()) continue;
+          if (
+            !files?.length &&
+            !force &&
+            old &&
+            stat.mtime <= old.lastModified &&
+            stat.size === old.fileSize &&
+            old.chunkLayoutVersion === EMBEDDING_CHUNK_LAYOUT_VERSION
+          )
+            continue;
+          const updated = await this.processSingleFile(projectId, fullPath, projectPath, {
+            batchSize,
+            rateLimit,
+            maxChunkSize,
+            force,
           });
-        } else {
-          logger.info('🛠️ Processing auto-detected stale files', {
-            projectId,
-            staleFiles: staleFiles.length,
-          });
-
-          for (const relativeFilePath of staleFiles) {
-            try {
-              const fullPath = path.resolve(projectPath, relativeFilePath);
-              if (!fs.existsSync(fullPath)) {
-                continue;
-              }
-
-              const fileResult = await this.processSingleFile(projectId, fullPath, projectPath, {
-                batchSize,
-                rateLimit,
-                maxChunkSize,
-              });
-
-              result.processedFiles++;
-              result.embeddings += fileResult.embeddings;
-              result.totalChunks += fileResult.chunks;
-            } catch (error) {
-              const errorMsg = `Failed to update embeddings for ${relativeFilePath}: ${error instanceof Error ? error.message : String(error)}`;
-              logger.error(`❌ ${errorMsg}`);
-              result.errors.push(errorMsg);
-            }
-          }
+          result.processedFiles++;
+          result.embeddings += updated.embeddings;
+          result.totalChunks += updated.chunks;
+        } catch (error) {
+          const message = `Failed to update embeddings for ${requestedPath}: ${error instanceof Error ? error.message : String(error)}`;
+          logger.error(message);
+          result.errors.push(message);
         }
       }
 
@@ -2063,6 +2005,7 @@ export class LocalEmbeddingGenerator {
       batchSize: number;
       rateLimit: number;
       maxChunkSize: number;
+      force?: boolean;
     }
   ): Promise<{ embeddings: number; chunks: number }> {
     // Use the existing generateFileEmbeddings method which handles chunking and embedding generation
@@ -2070,8 +2013,10 @@ export class LocalEmbeddingGenerator {
       batchSize: options.batchSize,
       rateLimit: options.rateLimit,
       maxChunkSize: options.maxChunkSize,
+      force: options.force,
     });
 
+    if (progress.errors.length) throw new Error(progress.errors.join('; '));
     return {
       embeddings: progress.embeddings,
       chunks: progress.totalChunks,

@@ -184,6 +184,27 @@ export class LocalEmbeddingProvider {
       throw new Error('Failed to initialize embedding pipeline');
     }
 
+    // Limit padding within a call without changing input text or output order.
+    // Sub-batches meet the same limits, so recursive calls take the normal path.
+    const ordered = validTexts.map((text, index) => ({ text, index,
+      length: Math.max(1, Math.min(text.length, this.config.maxLength * 4)) }))
+      .sort((a, b) => a.length - b.length || a.index - b.index);
+    const batches: typeof ordered[] = [];
+    for (const item of ordered) {
+      const last = batches[batches.length - 1];
+      if (!last || last.length >= 16 || item.length > last[0].length * 2) batches.push([item]);
+      else last.push(item);
+    }
+    if (batches.length > 1) {
+      const results: EmbeddingResult[] = new Array(validTexts.length);
+      for (const batch of batches) {
+        const embedded = await this.generateEmbeddings(batch.map(item => item.text));
+        if (embedded.length !== batch.length) throw new Error('Incomplete embedding sub-batch');
+        batch.forEach((item, index) => { results[item.index] = embedded[index]; });
+      }
+      return results;
+    }
+
     try {
       logger.debug('🔄 Generating embeddings with local model', {
         model: this.config.model,
@@ -520,6 +541,12 @@ export class LocalEmbeddingProvider {
       maxLength: this.config.maxLength,
       offline: true,
     };
+  }
+
+  /** Bump the input version if preprocessing or inference semantics change. */
+  getCacheIdentity(): string {
+    return JSON.stringify({ inputVersion: 1, model: this.model, maxLength: this.config.maxLength,
+      normalize: this.config.normalize, pooling: this.config.pooling });
   }
 
   /**

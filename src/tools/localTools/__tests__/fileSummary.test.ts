@@ -12,16 +12,16 @@ import type { AstGrepResult, AstGrepMatch } from '../astGrep';
 import type { ParsedFile } from '../../../core/compactor/astParser';
 import { tmpdir } from 'os';
 import { ASTParser } from '../../../core/compactor/astParser';
-import { execSync } from 'child_process';
+import { runAstGrepSync } from '../../../runtime/grep/astGrepBinary';
 
 // Mock dependencies for unit tests
 jest.mock('../astGrep');
 jest.mock('../../../core/compactor/astParser');
-jest.mock('child_process');
+jest.mock('../../../runtime/grep/astGrepBinary');
 
 const mockHandleAstGrep = handleAstGrep as jest.MockedFunction<typeof handleAstGrep>;
 const mockASTParser = ASTParser as jest.MockedClass<typeof ASTParser>;
-const mockExecSync = execSync as jest.MockedFunction<typeof execSync>;
+const mockRunAstGrepSync = runAstGrepSync as jest.MockedFunction<typeof runAstGrepSync>;
 
 describe('File Summary Tool (Unit Tests)', () => {
   const testFilePath = path.join(tmpdir(), 'test-file.ts');
@@ -55,8 +55,8 @@ describe('File Summary Tool (Unit Tests)', () => {
     it('should use ast-grep fallback for Python and extract symbols', async () => {
       const filePath = path.join(tmpdir(), 'test.py');
 
-      // Mock execSync responses for functions and classes patterns
-      mockExecSync
+      // Mock runAstGrepSync responses for functions and classes patterns
+      mockRunAstGrepSync
         .mockReturnValueOnce(
           JSON.stringify({
             range: { start: { line: 1 }, end: { line: 1 } },
@@ -76,7 +76,7 @@ describe('File Summary Tool (Unit Tests)', () => {
       const result = await getComprehensiveASTAnalysis(filePath);
 
       expect(mockASTParser.prototype.parseFile).toHaveBeenCalled();
-      expect(mockExecSync).toHaveBeenCalled(); // execSync is now used instead of handleAstGrep
+      expect(mockRunAstGrepSync).toHaveBeenCalled(); // runAstGrepSync is now used instead of handleAstGrep
       expect(result.allFunctions).toHaveLength(1);
       expect(result.allFunctions[0].name).toBe('my_func');
       expect(result.allFunctions[0].signature).toContain('def my_func(param):');
@@ -111,7 +111,7 @@ describe('File Summary Tool (Unit Tests)', () => {
 
       const result = await getComprehensiveASTAnalysis(filePath);
 
-      // TypeScript should NOT use execSync fallback since it has 1 symbol
+      // TypeScript should NOT use runAstGrepSync fallback since it has 1 symbol
       expect(result.totalSymbols).toBe(1);
       expect(result.allFunctions).toHaveLength(1);
       expect(result.allFunctions[0].name).toBe('TSFunc');
@@ -119,7 +119,7 @@ describe('File Summary Tool (Unit Tests)', () => {
 
     it('should fallback gracefully if ast-grep fails (0 symbols)', async () => {
       const filePath = path.join(tmpdir(), 'test.go');
-      mockExecSync.mockImplementation(() => {
+      mockRunAstGrepSync.mockImplementation(() => {
         throw new Error('Ast-grep error');
       });
 
@@ -134,9 +134,9 @@ describe('File Summary Tool (Unit Tests)', () => {
     it('should extract methods as functions with isMethod: true for Java', async () => {
       const filePath = path.join(tmpdir(), 'test.java');
 
-      // Mock execSync to return method match for the 'public ' pattern
-      mockExecSync.mockImplementation((cmd: any) => {
-        const command = typeof cmd === 'string' ? cmd : '';
+      // Mock runAstGrepSync to return method match for the 'public ' pattern
+      mockRunAstGrepSync.mockImplementation((cmd: any) => {
+        const command = Array.isArray(cmd) ? cmd.join(' ') : '';
         // Check if this is a method pattern call (public pattern for Java)
         if (command.includes('public ') && command.includes('java')) {
           return (

@@ -16,5 +16,10 @@
     "--json",
     "--project-path",
     "${projectPath}"
+  ],
+  "notes": [
+    "Does not create, refresh, or query the project embedding index",
+    "If symbol-level code evidence is unavailable, use relevant files and identifiers in one context --no-embeddings --format index query",
+    "Do not retry with a longer timeout or read the raw transcript solely for code routing"
   ]
 }

@@ -6,6 +6,8 @@ const includeIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 const testMatch = ['**/src/**/*.test.ts', '**/tests/**/*.test.js'];
 
 const testPathIgnorePatterns = [
+  'benchmarks/',
+  'artifacts/',
   'tools-old/',
   'indexers-old/',
   'renderers-old/',
@@ -20,7 +22,6 @@ if (!includeIntegrationTests) {
   testPathIgnorePatterns.push('src/__tests__/integration/');
   testPathIgnorePatterns.push('tests/integration/');
   testPathIgnorePatterns.push('src/local/__tests__/embeddingStorage.test.ts');
-  testPathIgnorePatterns.push('src/local/__tests__/automaticIndexer.test.ts');
   testPathIgnorePatterns.push('src/local/__tests__/fileWatcher.test.ts');
   testPathIgnorePatterns.push('src/__tests__/examples/');
   testPathIgnorePatterns.push('src/core/__tests__/errorHandling.test.ts');
@@ -32,6 +33,7 @@ module.exports = {
   testMatch,
   setupFiles: ['<rootDir>/tests/setupEnv.js'],
   testPathIgnorePatterns,
+  modulePathIgnorePatterns: ['<rootDir>/benchmarks/', '<rootDir>/artifacts/'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   transform: {
     '^.+\\.ts$': [

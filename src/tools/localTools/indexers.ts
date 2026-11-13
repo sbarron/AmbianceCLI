@@ -139,6 +139,10 @@ export async function buildExportIndex(files: FileInfo[]): Promise<ExportItem[]>
  */
 export async function buildImportGraph(files: FileInfo[]): Promise<Map<string, string[]>> {
   const graph = new Map<string, string[]>();
+  const knownFiles = new Map(files.map(file => {
+    const relative = path.posix.normalize(toPosix(file.relPath));
+    return [importPathIdentity(relative), relative] as const;
+  }));
 
   for (const file of files) {
     if (!['typescript', 'javascript'].includes(file.language)) continue;
@@ -148,11 +152,11 @@ export async function buildImportGraph(files: FileInfo[]): Promise<Map<string, s
       const imports = extractImportsFromContent(content);
 
       const resolvedImports = imports
-        .filter(imp => imp.startsWith('./') || imp.startsWith('../'))
-        .map(imp => resolveImportPath(imp, file.relPath))
+        .filter(imp => imp === '.' || imp === '..' || imp.startsWith('./') || imp.startsWith('../'))
+        .map(imp => resolveImportPath(imp, file.relPath, knownFiles))
         .filter(Boolean) as string[];
 
-      graph.set(file.relPath, resolvedImports);
+      graph.set(path.posix.normalize(toPosix(file.relPath)), [...new Set(resolvedImports)]);
     } catch (error) {
       logger.warn('Could not build import graph for file', {
         file: file.relPath,
@@ -1344,25 +1348,35 @@ function determineEnvUsage(line: string): EnvItem['usage'] {
   return 'read';
 }
 
-function resolveImportPath(importPath: string, currentFile: string): string | null {
-  try {
-    const currentDir = path.dirname(currentFile);
-    const resolved = path.resolve(currentDir, importPath);
-    const normalized = resolved.replace(/\\/g, '/');
+function importPathIdentity(file: string): string {
+  return process.platform === 'win32' ? file.toLowerCase() : file;
+}
 
-    // Try with common extensions
-    const extensions = ['', '.ts', '.js', '.tsx', '.jsx', '/index.ts', '/index.js'];
-    for (const ext of extensions) {
-      const withExt = normalized + ext;
-      if (withExt !== currentFile) {
-        return withExt;
-      }
-    }
-
-    return normalized;
-  } catch {
-    return null;
+function resolveImportPath(
+  importPath: string,
+  currentFile: string,
+  knownFiles: ReadonlyMap<string, string>
+): string | null {
+  const current = path.posix.normalize(toPosix(currentFile));
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(current), toPosix(importPath)));
+  // Resolve within the discovered project, never the CLI process's cwd. An
+  // unresolved or excluded file must not become a guessed dependency edge.
+  if (resolved === '..' || resolved.startsWith('../') || path.posix.isAbsolute(resolved)) return null;
+  const extensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts'];
+  const candidates = [resolved, ...extensions.map(ext => resolved + ext),
+    ...extensions.map(ext => path.posix.join(resolved, 'index' + ext))];
+  // Node-style emitted specifiers can refer to TypeScript source files.
+  const substitutions: Record<string, string[]> = {
+    '.js': ['.ts', '.tsx', '.d.ts'], '.jsx': ['.tsx', '.ts'],
+    '.mjs': ['.mts', '.d.mts'], '.cjs': ['.cts', '.d.cts'],
+  };
+  const emittedExtension = path.posix.extname(resolved);
+  for (const ext of substitutions[emittedExtension] || []) {
+    candidates.push(resolved.slice(0, -emittedExtension.length) + ext);
   }
+  return candidates
+    .map(candidate => knownFiles.get(importPathIdentity(candidate)))
+    .find(candidate => candidate !== undefined && candidate !== current) || null;
 }
 
 /**

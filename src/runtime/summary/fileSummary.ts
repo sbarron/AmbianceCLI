@@ -1,3 +1,4 @@
+import { runAstGrepSync } from '../grep/astGrepBinary';
 /**
  * @fileOverview: Local file summary tool for AST-based file analysis
  * @module: FileSummary
@@ -669,17 +670,17 @@ function extractSymbolsWithAstGrep(
   // Run for functions
   for (const pat of funcPatterns) {
     try {
-      // Use direct CLI call to ast-grep for more reliable results
-      const { execSync } = require('child_process');
-      const command = `npx ast-grep --pattern "${pat.pattern.replace(/"/g, '\\"')}" --lang ${pat.lang} --json=stream "${filePath}"`;
-
       let matches: any[] = [];
       try {
-        const stdout = execSync(command, {
-          cwd: process.cwd(),
-          encoding: 'utf8',
-          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-        });
+        const stdout = runAstGrepSync([
+          '--pattern',
+          pat.pattern,
+          '--lang',
+          pat.lang,
+          '--json=stream',
+          '--',
+          path.resolve(filePath),
+        ]);
 
         // Parse the JSON stream output
         matches = stdout
@@ -698,7 +699,7 @@ function extractSymbolsWithAstGrep(
       } catch (error) {
         // Command failed or no matches found
         logger.warn('ast-grep command failed for functions', {
-          command,
+          filePath,
           error: error instanceof Error ? error.message : String(error),
         });
         matches = [];
@@ -750,17 +751,17 @@ function extractSymbolsWithAstGrep(
   // Similar for classes and methods (adapt to allClasses/allFunctions)
   for (const pat of classPatterns) {
     try {
-      // Use direct CLI call to ast-grep for more reliable results
-      const { execSync } = require('child_process');
-      const command = `npx ast-grep --pattern "${pat.pattern.replace(/"/g, '\\"')}" --lang ${pat.lang} --json=stream "${filePath}"`;
-
       let matches: any[] = [];
       try {
-        const stdout = execSync(command, {
-          cwd: process.cwd(),
-          encoding: 'utf8',
-          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-        });
+        const stdout = runAstGrepSync([
+          '--pattern',
+          pat.pattern,
+          '--lang',
+          pat.lang,
+          '--json=stream',
+          '--',
+          path.resolve(filePath),
+        ]);
 
         // Parse the JSON stream output
         matches = stdout
@@ -819,17 +820,17 @@ function extractSymbolsWithAstGrep(
 
   for (const pat of methodPatterns) {
     try {
-      // Use direct CLI call to ast-grep for more reliable results
-      const { execSync } = require('child_process');
-      const command = `npx ast-grep --pattern "${pat.pattern.replace(/"/g, '\\"')}" --lang ${pat.lang} --json=stream "${filePath}"`;
-
       let matches: any[] = [];
       try {
-        const stdout = execSync(command, {
-          cwd: process.cwd(),
-          encoding: 'utf8',
-          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-        });
+        const stdout = runAstGrepSync([
+          '--pattern',
+          pat.pattern,
+          '--lang',
+          pat.lang,
+          '--json=stream',
+          '--',
+          path.resolve(filePath),
+        ]);
 
         // Parse the JSON stream output
         matches = stdout

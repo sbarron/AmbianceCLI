@@ -76,6 +76,10 @@ export interface BundleSnippet {
   symbol: string;
   snippet: string;
   byteLen: number;
+  /** Actual source lines in the excerpt, including any surrounding context. */
+  start?: number;
+  end?: number;
+  truncated?: boolean;
 }
 
 export interface NextActions {
@@ -547,10 +551,10 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     );
 
     // 9. Compute next actions
-    const nextActions = computeNextActions(jumpTargets, request.taskType);
+    const nextActions = computeNextActions(jumpTargets, request.taskType, request.projectPath);
 
     // 10. Build evidence list
-    const evidence = buildEvidence(jumpTargets, astMatches);
+    const evidence = buildEvidence(jumpTargets, astMatches, request.projectPath);
 
     // 11. Build LLM-ready bundle with anchors/neighbors/env hints
     const llmBundle = buildLLMBundle({
@@ -575,7 +579,7 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
         : 'hybrid-concept';
     const moduleCoverage = new Set(
       jumpTargets.map(target => {
-        const parts = getRelativePath(target.file).replace(/\\/g, '/').split('/');
+        const parts = getRelativePath(target.file, request.projectPath).split('/');
         return parts.slice(0, Math.min(parts.length, 2)).join('/');
       })
     ).size;
@@ -590,7 +594,7 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     // Group jump targets by file
     const byFile: Record<string, JumpTarget[]> = {};
     jumpTargets.forEach(target => {
-      const relPath = getRelativePath(target.file);
+      const relPath = getRelativePath(target.file, request.projectPath);
       if (!byFile[relPath]) {
         byFile[relPath] = [];
       }
@@ -791,7 +795,7 @@ function chooseAttackPlan(plan: string, query: string): string {
   return planScores[topPlan as keyof typeof planScores] > 0 ? topPlan : 'auto';
 }
 
-function buildDslQueriesForPlan(
+export function buildDslQueriesForPlan(
   plan: string,
   query: string,
   userQueries: AstQuery[] = []
@@ -805,9 +809,11 @@ function buildDslQueriesForPlan(
   // Add dynamic function/symbol queries based on query content
   for (const word of queryWords) {
     if (word.length > 3 && !['the', 'and', 'how', 'does', 'what', 'when', 'where'].includes(word)) {
-      dynamicQueries.push({ kind: 'symbol', name: new RegExp(word, 'i') });
-      dynamicQueries.push({ kind: 'export', name: new RegExp(word, 'i') });
-      dynamicQueries.push({ kind: 'call', callee: new RegExp(word, 'i') });
+      // The user's prose is literal text; only explicit astQueries may supply regexes.
+      const literal = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      dynamicQueries.push({ kind: 'symbol', name: new RegExp(literal, 'i') });
+      dynamicQueries.push({ kind: 'export', name: new RegExp(literal, 'i') });
+      dynamicQueries.push({ kind: 'call', callee: new RegExp(literal, 'i') });
     }
   }
 
@@ -1078,15 +1084,15 @@ async function generateDeterministicAnswer(
   return answerModule.generateDeterministicAnswer(plan, taskType, targets, indices);
 }
 
-function computeNextActions(targets: JumpTarget[], taskType: string): NextActions {
+function computeNextActions(targets: JumpTarget[], taskType: string, projectPath: string): NextActions {
   const mode: 'code_lookup' | 'project_research' | 'implementation_ready' =
     targets.length > 0 ? 'code_lookup' : 'project_research';
 
   const openFiles = targets.slice(0, 3).map(t => {
     if (t.start && t.end) {
-      return `${getRelativePath(t.file)}:${t.start}-${t.end}`;
+      return `${getRelativePath(t.file, projectPath)}:${t.start}-${t.end}`;
     }
-    return getRelativePath(t.file);
+    return getRelativePath(t.file, projectPath);
   });
 
   const checks: string[] = [];
@@ -1108,12 +1114,12 @@ function computeNextActions(targets: JumpTarget[], taskType: string): NextAction
   return { mode, openFiles, checks };
 }
 
-function buildEvidence(targets: JumpTarget[], matches: CandidateSymbol[]): string[] {
+function buildEvidence(targets: JumpTarget[], matches: CandidateSymbol[], projectPath: string): string[] {
   const evidence: string[] = [];
 
   // Add key findings
   targets.forEach(target => {
-    evidence.push(`${target.symbol} @ ${getRelativePath(target.file)}:${target.start || 0}`);
+    evidence.push(`${target.symbol} @ ${getRelativePath(target.file, projectPath)}:${target.start || 0}`);
   });
 
   // Add import/export evidence
@@ -1121,7 +1127,7 @@ function buildEvidence(targets: JumpTarget[], matches: CandidateSymbol[]): strin
     .filter(m => m.kind === 'import' || m.kind === 'export')
     .slice(0, 3)
     .forEach(match => {
-      evidence.push(`${match.kind}: ${match.symbol} @ ${getRelativePath(match.file)}`);
+      evidence.push(`${match.kind}: ${match.symbol} @ ${getRelativePath(match.file, projectPath)}`);
     });
 
   return evidence.slice(0, 10); // Limit to top 10 pieces of evidence
@@ -1154,13 +1160,8 @@ function inferRoleFromSymbol(symbol: string): string {
   return 'code symbol';
 }
 
-function getRelativePath(absolutePath: string): string {
-  const parts = absolutePath.split(/[\/\\]/);
-  const srcIndex = parts.findIndex(part => part === 'src');
-  if (srcIndex >= 0) {
-    return parts.slice(srcIndex).join('/');
-  }
-  return parts.slice(-2).join('/');
+function getRelativePath(file: string, projectPath: string): string {
+  return (path.isAbsolute(file) ? path.relative(projectPath, file) : file).replace(/\\/g, '/');
 }
 
 // ===== HELPERS FOR LLM BUNDLE =====
