@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
-      - run: npm audit --package-lock-only --audit-level=moderate
+      - run: npm audit --package-lock-only --audit-level=low
   test:
     if: github.event_name != 'schedule'
     strategy:
