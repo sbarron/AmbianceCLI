@@ -39,6 +39,17 @@ export interface EnhancedContextOptions {
 
 export interface EnhancedContextResult {
   content: string;
+  /** Ranked retrieval results, without embedding vectors, for source-aware consumers. */
+  semanticMatches?: Array<{
+    filePath: string;
+    similarity: number;
+    content: string;
+    startLine?: number;
+    endLine?: number;
+    symbols?: string[];
+    type: 'code' | 'comment' | 'docstring' | 'import' | 'export';
+    semanticRank: number;
+  }>;
   metadata: {
     totalFiles: number;
     includedFiles: number;
@@ -524,6 +535,16 @@ Try using a more specific directory or check the project path.`;
 
     const enhancedResult = {
       content: enhancedContent,
+      semanticMatches: sortedChunks.map(({ chunk, similarity }, semanticRank) => ({
+        filePath: chunk.filePath,
+        similarity,
+        content: chunk.content,
+        startLine: chunk.metadata.startLine,
+        endLine: chunk.metadata.endLine,
+        symbols: chunk.metadata.symbols,
+        type: chunk.metadata.type,
+        semanticRank,
+      })),
       metadata: {
         totalFiles: sortedChunks.length, // Number of files represented in chunks
         includedFiles: sortedChunks.length,

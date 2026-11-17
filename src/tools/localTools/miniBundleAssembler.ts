@@ -86,7 +86,15 @@ export async function assembleMiniBundle(
 
   for (const target of jumpTargets) {
     try {
-      const candidate = await extractSnippetCandidate(target, options);
+      const normalized = target.file.replace(/\\/g, '/');
+      const indexed = allFiles.find(file =>
+        file.absPath.replace(/\\/g, '/') === normalized ||
+        file.relPath.replace(/\\/g, '/') === normalized
+      );
+      // Relative targets belong to this project's file index, not server cwd.
+      if (!indexed && !path.isAbsolute(target.file)) continue;
+      const sourceTarget = indexed ? { ...target, file: indexed.absPath } : target;
+      const candidate = await extractSnippetCandidate(sourceTarget, options);
       if (candidate) {
         snippetCandidates.push(candidate);
       }

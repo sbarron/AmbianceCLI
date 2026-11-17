@@ -34,7 +34,12 @@ import {
   ValidationError,
 } from '../../core/validation';
 import { compileExcludePatterns, isExcludedPath } from '../utils/toolHelpers';
-import { UNIVERSAL_NEGATIVES } from '../localTools/enhancedLocalContext';
+import {
+  UNIVERSAL_NEGATIVES,
+  extractExplicitSymbolTokens,
+  localContext,
+  SemanticChunkMatch,
+} from '../localTools/enhancedLocalContext';
 
 // Global OpenAI service instance
 let openaiService: OpenAIService | null = null;
@@ -239,175 +244,6 @@ Accepts absolute paths or relative paths (when workspace can be detected).
   },
 };
 
-/**
- * Extract individual chunks with similarity scores from enhanced context content
- */
-function extractSimilarityChunks(content: string): any[] {
-  const chunks: any[] = [];
-
-  logger.debug('🔍 Extracting similarity chunks from content', {
-    contentLength: content.length,
-    contentPreview: content.substring(0, 200),
-    hasXml: content.includes('<focused_context>'),
-    hasStructured: content.includes('### ') && content.includes('% similar'),
-    hasCompact: content.includes('FOCUSED RESULTS'),
-  });
-
-  // Parse XML format (structured output from enhanced compactor)
-  if (content.includes('<focused_context>')) {
-    const chunkRegex =
-      /<relevant_chunk similarity="([^"]+)" file="([^"]+)" lines="([^"]*)">[\s\S]*?<content>([\s\S]*?)<\/content>[\s\S]*?<symbols>([\s\S]*?)<\/symbols>[\s\S]*?<\/relevant_chunk>/g;
-
-    let match;
-    while ((match = chunkRegex.exec(content)) !== null) {
-      const [_, similarity, filePath, lines, content, symbols] = match;
-      const [startLine, endLine] = lines.split('-').map(n => parseInt(n) || 0);
-
-      chunks.push({
-        path: filePath,
-        language: getLanguageFromPath(filePath),
-        summary: {
-          purpose: `Embedding similarity: ${(parseFloat(similarity) * 100).toFixed(1)}%`,
-          confidence: parseFloat(similarity),
-          startLine,
-          endLine,
-        },
-        content: content.trim(),
-        symbols: symbols.trim()
-          ? symbols
-              .trim()
-              .split(',')
-              .map(s => s.trim())
-          : [],
-        dependencies: [],
-        exports: [],
-        nodes: [],
-        type: 'embedding_chunk',
-      });
-    }
-  }
-  // Parse structured markdown format
-  else if (content.includes('### ') && content.includes('% similar')) {
-    const lines = content.split('\n');
-    let currentChunk: any = null;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-
-      // Look for chunk headers like "### 1. src\path\file.ts (45.4% similar)" or "### 1. file.js (85.2% similar)"
-      // Match the entire line and extract path and similarity manually for better reliability
-      const headerPattern = /^### \d+\.\s+(.+)\s+\(([0-9.]+)% similar\)$/;
-      const headerMatch = line.match(headerPattern);
-      if (headerMatch) {
-        // Save previous chunk if exists
-        if (currentChunk) {
-          chunks.push(currentChunk);
-        }
-
-        // More robust path extraction: find the last occurrence of " (XX.X% similar)"
-        const fullLine = line;
-        const similarityPattern = /\s+\(([0-9.]+)% similar\)$/;
-        const similarityMatch = fullLine.match(similarityPattern);
-
-        if (similarityMatch) {
-          // Extract file path by removing everything from "### N. " to " (XX.X% similar)"
-          const prefixPattern = /^### \d+\.\s+/;
-          const withoutPrefix = fullLine.replace(prefixPattern, '');
-          const filePath = withoutPrefix.replace(similarityPattern, '').trim();
-          const similarity = parseFloat(similarityMatch[1]) / 100;
-
-          currentChunk = {
-            path: filePath,
-            language: getLanguageFromPath(filePath),
-            summary: {
-              purpose: `Embedding similarity: ${(similarity * 100).toFixed(1)}%`,
-              confidence: similarity,
-            },
-            content: '',
-            symbols: [],
-            dependencies: [],
-            exports: [],
-            nodes: [],
-            type: 'embedding_chunk',
-          };
-
-          // Look for symbols line
-          if (i + 1 < lines.length && lines[i + 1].includes('**Symbols:**')) {
-            const symbolsLine = lines[i + 1];
-            const symbolsMatch = symbolsLine.match(/\*\*Symbols:\*\*\s*(.+)$/);
-            if (symbolsMatch) {
-              currentChunk.symbols = symbolsMatch[1].split(',').map(s => s.trim());
-            }
-            i++; // Skip the symbols line
-          }
-
-          // Look for code block start
-          if (i + 1 < lines.length && lines[i + 1].includes('```')) {
-            i++; // Skip the code block start
-            let codeContent = '';
-            while (i + 1 < lines.length && !lines[i + 1].includes('```')) {
-              i++;
-              codeContent += lines[i] + '\n';
-            }
-            currentChunk.content = codeContent.trim();
-          }
-        }
-      }
-    }
-
-    // Add the last chunk
-    if (currentChunk) {
-      chunks.push(currentChunk);
-    }
-  }
-  // Parse compact format
-  else if (content.includes('FOCUSED RESULTS') && content.includes('%)\n')) {
-    const chunkRegex = /(\d+)\.\s+([^:]+):(\d+)\s+\(([0-9]+)%\)\n([\s\S]*?)(?=\n---|\n\d+\.|$)/g;
-
-    let match;
-    while ((match = chunkRegex.exec(content)) !== null) {
-      const [_, index, filePath, startLine, similarityPercent, chunkContent] = match;
-      const similarity = parseInt(similarityPercent) / 100;
-
-      chunks.push({
-        path: filePath,
-        language: getLanguageFromPath(filePath),
-        summary: {
-          purpose: `Embedding similarity: ${(similarity * 100).toFixed(1)}%`,
-          confidence: similarity,
-          startLine: parseInt(startLine),
-        },
-        content: chunkContent.trim(),
-        symbols: [],
-        dependencies: [],
-        exports: [],
-        nodes: [],
-        type: 'embedding_chunk',
-      });
-    }
-  }
-
-  logger.info('🔍 Extracted similarity chunks', {
-    totalChunks: chunks.length,
-    format: content.includes('<focused_context>')
-      ? 'xml'
-      : content.includes('### ')
-        ? 'structured'
-        : 'compact',
-    averageConfidence:
-      chunks.length > 0
-        ? (
-            chunks.reduce((sum, chunk) => sum + (chunk.summary?.confidence || 0), 0) / chunks.length
-          ).toFixed(3)
-        : 0,
-  });
-
-  return chunks;
-}
-
-/**
- * Get language from file path (helper function)
- */
 function getLanguageFromPath(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase();
   const langMap: Record<string, string> = {
@@ -523,6 +359,7 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
 
     let compactedProject: any;
     let embeddingStats: any = null;
+    let semanticMatches: SemanticChunkMatch[] = [];
 
     if (canUseEmbeddings) {
       logger.info('🚀 Using enhanced semantic compactor with embeddings', {
@@ -598,7 +435,23 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
 
           if (canUseEmbeddings) {
             // Extract individual chunks with their similarity scores from enhanced content
-            const extractedChunks = extractSimilarityChunks(enhancedResult.content);
+            semanticMatches = (enhancedResult.semanticMatches || []).filter(
+              match => !isExcludedPath(match.filePath.replace(/\\/g, '/'), excludeRegexes)
+            );
+            const extractedChunks = semanticMatches
+              .filter(match => match.content.trim())
+              .map(match => ({
+                path: match.filePath,
+                language: getLanguageFromPath(match.filePath),
+                summary: {
+                  confidence: match.similarity,
+                  startLine: match.startLine,
+                  endLine: match.endLine,
+                },
+                content: match.content,
+                symbols: match.symbols || [],
+                type: 'embedding_chunk',
+              }));
 
             logger.info('🔍 Chunk extraction results', {
               contentLength: enhancedResult.content.length,
@@ -648,7 +501,10 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
           }
 
           embeddingStats =
-            enhancedResult && enhancedResult.metadata && enhancedResult.metadata.embeddingsUsed
+            canUseEmbeddings &&
+            enhancedResult &&
+            enhancedResult.metadata &&
+            enhancedResult.metadata.embeddingsUsed
               ? {
                   embeddingsUsed: true,
                   similarChunksFound: enhancedResult.metadata.similarChunksFound,
@@ -835,91 +691,141 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
     const contextBuilder = [];
     let currentTokens = 0;
     const maxContextTokens = Math.floor(maxTokens * 0.7); // Reserve tokens for AI response
+    const sourceEvidence: Array<{
+      path: string;
+      symbol: string;
+      startLine: number;
+      endLine: number;
+      truncated: boolean;
+      content: string;
+    }> = [];
 
-    logger.info('🧠 Building AI context', {
-      hasEnhancedContent: !!compactedProject.compactedContent,
-      relevantFilesCount: relevantFiles.length,
-      maxContextTokens,
-      maxTokens,
-    });
+    // Retrieve ranked original source for every query. Semantic locations are
+    // combined with structural ranking; snippets come from the current project.
+    const exactSymbols = extractExplicitSymbolTokens(query || '');
+    if (query) {
+      try {
+        const symbolNames = (query.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) || []).filter(
+          (name: string) => exactSymbols.has(name.toLowerCase().replace(/[^a-z0-9]/g, ''))
+        );
+        const local = await localContext({
+          projectPath: validatedProjectPath,
+          query,
+          maxTokens: Math.min(4000, Math.floor(maxContextTokens / 2)),
+          maxSimilarChunks,
+          generateEmbeddingsIfMissing: false,
+          excludePatterns,
+          semanticMatches,
+          astQueries: symbolNames.map((name: string) => ({ kind: 'symbol' as const, name })),
+        });
+        for (const snippet of local.miniBundle) {
+          if (!snippet.start || !snippet.end || !snippet.snippet.trim()) continue;
+          const normalizedPath = snippet.file.replace(/\\/g, '/');
+          if (isExcludedPath(normalizedPath, excludeRegexes)) continue;
+          if (
+            focusFiles.length &&
+            !focusFiles.some((focus: string) => normalizedPath.includes(focus.replace(/\\/g, '/')))
+          )
+            continue;
+          const content = snippet.snippet
+            .split('\n')
+            .map((line, i) => `${snippet.start! + i}: ${line}`)
+            .join('\n');
+          const evidence = {
+            path: normalizedPath,
+            symbol: snippet.symbol,
+            startLine: snippet.start,
+            endLine: snippet.end,
+            truncated: !!snippet.truncated,
+            content,
+          };
+          const item = {
+            ...evidence,
+            language: getLanguageFromPath(snippet.file),
+            purpose: 'Ranked original source evidence',
+            symbols: [],
+            exports: [],
+            type: 'source_evidence',
+          };
+          const tokens = Math.ceil(JSON.stringify(item).length / 4);
+          if (currentTokens + tokens > maxContextTokens) continue;
+          sourceEvidence.push(evidence);
+          contextBuilder.push(item);
+          currentTokens += tokens;
+        }
+      } catch (error) {
+        logger.warn('Could not retrieve ranked source evidence', { error: String(error) });
+      }
+    }
 
-    // If we have enhanced compacted content (from embeddings), extract individual chunks with confidence
-    if (compactedProject.compactedContent && embeddingStats) {
-      logger.info('🎯 Using enhanced embedding-based context with extracted chunks', {
-        contentLength: compactedProject.compactedContent.length,
-        embeddingsUsed: embeddingStats.embeddingsUsed,
-        similarChunks: embeddingStats.similarChunksFound,
-      });
-
-      // Extract individual chunks with their confidence ratings
-      const extractedChunks = extractSimilarityChunks(compactedProject.compactedContent);
-
-      if (extractedChunks.length > 0) {
-        // Add each chunk as a separate context item with confidence
-        for (const chunk of extractedChunks) {
-          if (currentTokens >= maxContextTokens) {
-            logger.info('⚠️ Reached token limit, stopping chunk addition', {
-              currentTokens,
-              maxContextTokens,
-              chunksAdded: contextBuilder.length,
-            });
-            break;
-          }
-
-          const chunkTokens = Math.ceil((chunk.content?.length || 0) / 4);
-          if (currentTokens + chunkTokens <= maxContextTokens) {
-            contextBuilder.push(chunk);
-            currentTokens += chunkTokens;
-
-            logger.debug('📄 Added embedding chunk to context', {
-              path: chunk.path,
-              confidence: chunk.summary?.confidence,
-              tokenEstimate: chunkTokens,
-              totalTokens: currentTokens,
-            });
+    // Reuse lexical discovery when structural retrieval finds no source.
+    // Only matched, permitted references are read; no arbitrary zero-score files.
+    if (query && sourceEvidence.length === 0 && maxContextTokens >= 512) {
+      try {
+        const { handleExplore } = await import('../../runtime/context/explore');
+        const budget = Math.max(256, Math.min(4000, Math.floor(maxContextTokens / 2)));
+        const found = await handleExplore({
+          projectPath: validatedProjectPath,
+          action: 'discover',
+          query: query.slice(0, 300),
+          mode: 'lexical',
+          maxTargets: Math.min(maxSimilarChunks, 50),
+          maxTokens: budget,
+        });
+        const refs = (found.targets || [])
+          .filter((target: any) => {
+            const filePath = target.file.replace(/\\/g, '/');
+            return (
+              !isExcludedPath(filePath, excludeRegexes) &&
+              (!focusFiles.length ||
+                focusFiles.some((focus: string) => filePath.includes(focus.replace(/\\/g, '/'))))
+            );
+          })
+          .slice(0, 10)
+          .map((target: any) => ({ ref: target.ref }));
+        if (refs.length) {
+          const read = await handleExplore({
+            projectPath: validatedProjectPath,
+            action: 'read',
+            selections: refs,
+            maxTargets: Math.min(maxSimilarChunks, 50),
+            maxTokens: budget,
+          });
+          for (const item of read.evidence || []) {
+            if (!item.content?.trim()) continue;
+            const content = item.content
+              .split('\n')
+              .map((line: string, i: number) => `${item.start + i}: ${line}`)
+              .join('\n');
+            const evidence = {
+              path: item.file.replace(/\\/g, '/'),
+              symbol: item.symbol,
+              startLine: item.start,
+              endLine: item.end,
+              truncated: !item.completeSymbol,
+              content,
+            };
+            const contextItem = {
+              ...evidence,
+              language: getLanguageFromPath(evidence.path),
+              purpose: 'Ranked original source evidence',
+              symbols: [],
+              exports: [],
+              type: 'source_evidence',
+            };
+            const tokens = Math.ceil(JSON.stringify(contextItem).length / 4);
+            if (currentTokens + tokens > maxContextTokens) continue;
+            sourceEvidence.push(evidence);
+            contextBuilder.push(contextItem);
+            currentTokens += tokens;
           }
         }
-
-        logger.info('✅ Enhanced chunks added with confidence ratings', {
-          chunksAdded: extractedChunks.length,
-          totalTokens: currentTokens,
-          tokenBudgetUsed: `${Math.round((currentTokens / maxContextTokens) * 100)}%`,
-          averageConfidence:
-            extractedChunks.length > 0
-              ? (
-                  extractedChunks.reduce(
-                    (sum, chunk) => sum + (chunk.summary?.confidence || 0),
-                    0
-                  ) / extractedChunks.length
-                ).toFixed(3)
-              : 0,
-        });
-      } else {
-        // Fallback to single enhanced context if extraction fails
-        logger.warn('⚠️ Chunk extraction failed, using single enhanced context', {
-          contentLength: compactedProject.compactedContent.length,
-        });
-
-        const enhancedContext = {
-          type: 'enhanced_embedding_context',
-          path: 'embedding_similarity_search',
-          content: compactedProject.compactedContent,
-          metadata: {
-            source: 'embedding_similarity_search',
-            query: query || 'General analysis',
-            similarChunksFound: embeddingStats.similarChunksFound,
-            embeddingsUsed: embeddingStats.embeddingsUsed,
-          },
-          language: 'markdown',
-          purpose: 'Enhanced embedding-based context',
-          symbols: [],
-          exports: [],
-        };
-
-        currentTokens = Math.ceil(compactedProject.compactedContent.length / 4);
-        contextBuilder.push(enhancedContext);
+      } catch (error) {
+        logger.warn('Could not retrieve fallback source evidence', { error: String(error) });
       }
-    } else {
+    }
+
+    {
       // Fall back to traditional file-by-file processing
       logger.info('📁 Using traditional file-based context building', {
         relevantFilesCount: relevantFiles.length,
@@ -1068,7 +974,11 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
       includeExplanations,
       format
     );
-    const userPrompt = createAnalysisUserPrompt(query, contextBuilder, taskType, format);
+    const userPrompt =
+      createAnalysisUserPrompt(query, contextBuilder, taskType, format) +
+      (sourceEvidence.length
+        ? '\n\nAnswer the specific question directly using the numbered source evidence. Cite file and line numbers, cover the relevant branches, and identify any limits from truncated source.'
+        : '');
 
     // Calculate dynamic timeout based on context size and complexity
     const baseTimeoutMs = 30000; // 30 seconds base
@@ -1245,6 +1155,9 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
           maxAllocated: maxTokens,
           aiResponse: aiResponse.usage?.total_tokens || 0,
         },
+        sourceEvidenceStatus: sourceEvidence.length ? 'available' : 'no_source_evidence',
+        embeddingsUsed: !!embeddingStats,
+        similarChunksFound: embeddingStats?.similarChunksFound || 0,
         processingTime: Date.now() - startTime,
         provider: openai.getProviderInfo().provider,
         model: openai.getProviderInfo().model,
@@ -1259,6 +1172,7 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
       output: formattedOutput,
       format,
       metadata: analysisData.metadata,
+      sourceEvidence,
     };
 
     logger.info('AI-powered context analysis completed', {

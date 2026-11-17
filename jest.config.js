@@ -6,15 +6,15 @@ const includeIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 const testMatch = ['**/src/**/*.test.ts', '**/tests/**/*.test.js'];
 
 const testPathIgnorePatterns = [
-  'benchmarks/',
-  'artifacts/',
-  'tools-old/',
-  'indexers-old/',
-  'renderers-old/',
-  'search-old/',
-  'database-old/',
-  'llm-old/',
-  'types-old/',
+  '<rootDir>/benchmarks/',
+  '<rootDir>/artifacts/',
+  '<rootDir>/tools-old/',
+  '<rootDir>/indexers-old/',
+  '<rootDir>/renderers-old/',
+  '<rootDir>/search-old/',
+  '<rootDir>/database-old/',
+  '<rootDir>/llm-old/',
+  '<rootDir>/types-old/',
 ];
 
 if (!includeIntegrationTests) {

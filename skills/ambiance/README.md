@@ -33,7 +33,7 @@ Versioned skill templates for CLI-first agent workflows.
 
 ## Prerequisites
 
-Before the first investigation or when the environment changes, verify the CLI:
+When troubleshooting installation or a changed environment, verify the CLI:
 
 ```bash
 # 1. Verify CLI installation and environment
@@ -43,7 +43,7 @@ ambiance doctor --json
 ambiance skill verify --json
 ```
 
-**Default policy**: choose adaptively. Use `context --format index --no-embeddings` when exact identifiers are known. Use `context --format index --embeddings` for conceptual or cross-system questions, then turn the discovered chunk symbols into one deterministic follow-up query.
+**Default policy**: choose tools for the evidence gap. Use `explore discover` for issue words, `explore search` for literal text, and selected reads or follows for source-driven questions. Direct source inspection and `context` remain available. No Ambiance call is mandatory; stop when grounded. See the worked example in [SKILL.md](./SKILL.md).
 
 ## Quick Reference for Agents
 
@@ -51,8 +51,8 @@ ambiance skill verify --json
 |------|---------|------------|------------|
 | Check environment | `doctor` | First run, troubleshooting | No |
 | Project overview | `hints` | First time in codebase, navigation | No |
-| Discover an unfamiliar behavior | `context "<query>" --format index --embeddings` | Semantic frontier across modules | Yes |
-| Understand known symbols | `context "<symbols>" --no-embeddings` | Focused deterministic evidence | No |
+| Discover an unfamiliar behavior | `explore discover "<issue words>"` | Ranked lexical candidates; opt into ready-index hybrid when useful | Optional |
+| Understand known symbols | `explore read --file-path <file> --symbol <name>` | Selected complete source | No |
 | Navigate to exact locations | `context "<query>" --format index --no-embeddings` | Low-token file:line targets | No |
 | Debug an error | `debug "<log>"` | Extract context from error logs | Optional |
 | Find AST structures | `grep "<pattern>"` | Complete code-shaped structural search after index navigation | No |
@@ -65,20 +65,16 @@ ambiance skill verify --json
 
 ## Search Routing Policy
 
-Use this order for agent search decisions:
-
-1. Known identifiers: run a deterministic `context --format index --no-embeddings` query.
-2. Unknown vocabulary or cross-system behavior: run one bounded `context --format index --embeddings` semantic frontier.
-3. Convert semantic chunk symbols into one deterministic context query.
-4. Use structural `grep`, `summary`, bounded host text search, and exact range reads on selected files.
-5. Trace registration/callers, authorization, effects, consumers, and relevant failure tests.
-6. Check one competing module or negative hypothesis before stopping.
-
-Use at most one bounded search scout after these steps leave a specific unresolved question. Multi-agent search is not the default navigation strategy.
+Choose the operation that closes the current evidence gap. Discovery ranks issue
+words; literal search preserves exact phrase matching. Copy returned refs into
+reads or relationship follows and refine queries from observed source. Batch
+queries or selections when helpful, verify actual call wiring, and stop when the
+issue is grounded. For a known entry point, use a direct read. Normal host tools
+are available throughout; one call or none may be enough.
 
 ## Query Strategy: Semantic Anchor Clustering
 
-For the first semantic frontier, describe one behavior or system boundary in plain language. For the deterministic follow-up, use the exact identifiers returned by the semantic chunks.
+When using optional `context` semantic discovery, describe a behavior or boundary in plain language. For a follow-up, use exact identifiers observed in the returned chunks.
 
 Examples:
 - Semantic frontier: `background cleanup during process shutdown`

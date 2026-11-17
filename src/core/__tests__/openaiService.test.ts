@@ -286,6 +286,47 @@ describe('OpenAIService', () => {
   });
 
   describe('Reasoning Models', () => {
+    it.each([
+      ['gpt-6-luna', 'medium'],
+      ['gpt-6.1-terra', 'xhigh'],
+    ])(
+      'sends the configured effort for %s, including on a token-budget retry',
+      async (model, effort) => {
+        const original = process.env.OPENAI_REASONING_EFFORT;
+        process.env.OPENAI_REASONING_EFFORT = effort;
+        try {
+          mockResponsesCreate.mockResolvedValue({
+            model,
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+            output_text: 'Partial source analysis',
+            output: [],
+          });
+          await service.createChatCompletion({
+            model,
+            temperature: 1,
+            max_completion_tokens: 800,
+            messages: [
+              {
+                role: 'user',
+                content:
+                  'Inspect the retry policy in src/upload.ts and explain which response codes cause the caller to retry a failed upload and where the retry limit is enforced.',
+              },
+            ],
+          });
+          expect(mockChatCreate).not.toHaveBeenCalled();
+          expect(mockResponsesCreate).toHaveBeenCalledTimes(2);
+          for (const [request] of mockResponsesCreate.mock.calls) {
+            expect(request).toMatchObject({ model, reasoning: { effort } });
+            expect(request).not.toHaveProperty('temperature');
+          }
+        } finally {
+          if (original === undefined) delete process.env.OPENAI_REASONING_EFFORT;
+          else process.env.OPENAI_REASONING_EFFORT = original;
+        }
+      }
+    );
+
     beforeEach(() => {
       process.env.OPENAI_BASE_MODEL = 'gpt-5';
       process.env.OPENAI_MINI_MODEL = 'gpt-5-mini';

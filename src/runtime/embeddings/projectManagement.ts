@@ -212,6 +212,8 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
     // Find all matching files (same as indexer)
     const allFiles = await globby(includePatterns, {
       cwd: projectPath,
+      gitignore: true,
+      ignoreFiles: ['.gitignore', '.cursorignore', '.vscodeignore', '.ambianceignore'],
       ignore: allIgnorePatterns,
       absolute: false,
       dot: false,
@@ -244,7 +246,8 @@ export async function analyzeProjectIndexableFiles(projectPath: string): Promise
     const indexableFiles = allFiles.filter(file => {
       if (shouldIgnoreFile(file)) return false;
       try {
-        return fs.statSync(path.join(projectPath, file)).size > 0;
+        const fullPath = path.join(projectPath, file);
+        return fs.statSync(fullPath).size > 0 && fs.readFileSync(fullPath, 'utf8').trim().length > 0;
       } catch {
         return false;
       }

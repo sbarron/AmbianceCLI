@@ -40,6 +40,8 @@ export interface LocalEmbeddingConfig {
   maxLength?: number;
   normalize?: boolean;
   pooling?: 'mean' | 'cls';
+  /** Refuse all model downloads; use only an existing local cache. */
+  localFilesOnly?: boolean;
 }
 
 export class LocalEmbeddingProvider {
@@ -54,6 +56,7 @@ export class LocalEmbeddingProvider {
       maxLength: config.maxLength || 512,
       normalize: config.normalize ?? true,
       pooling: config.pooling || 'mean',
+      localFilesOnly: config.localFilesOnly ?? false,
     };
 
     this.model = `Xenova/${this.mapModelName(this.config.model)}`;
@@ -136,7 +139,7 @@ export class LocalEmbeddingProvider {
       // Load the feature extraction pipeline
       this.pipeline = await transformers.pipeline('feature-extraction', this.model, {
         // Use local cache to avoid re-downloading models
-        local_files_only: false,
+        local_files_only: this.config.localFilesOnly,
         revision: 'main',
       });
 

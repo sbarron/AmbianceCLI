@@ -3,6 +3,11 @@
   "version": 1,
   "commands": [
     {
+      "name": "explore",
+      "description": "Agent-directed lexical or ready-index hybrid discovery, literal search, selected source reads, and relationship expansion",
+      "json": true
+    },
+    {
       "name": "doctor",
       "description": "Environment/readiness diagnostics",
       "json": true

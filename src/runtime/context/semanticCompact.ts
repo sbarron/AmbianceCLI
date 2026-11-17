@@ -23,6 +23,7 @@ import {
 } from '../../tools/localTools/systemMapComposer';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import * as path from 'path';
+import { contextRequestKey } from './requestKey';
 import type {
   LocalContextResponse,
   SemanticChunkMatch,
@@ -43,18 +44,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
   }
 
   // Compose a single-flight key early to dedupe duplicate concurrent calls
-  const singleFlightKey = (() => {
-    try {
-      const q = (args?.query || '').toString().slice(0, 200);
-      const p = validateAndResolvePath(args.projectPath);
-      const f = args?.format || 'enhanced';
-      const s = args?.autoSync ? 'sync' : 'nosync';
-      const e = args?.disableEmbeddings === true ? 'embeddings-off' : 'embeddings-auto';
-      return `${path.resolve(p)}::${f}::${q}::${s}::${e}`;
-    } catch {
-      return `default-key`;
-    }
-  })();
+  const singleFlightKey = contextRequestKey(args, validateAndResolvePath(args.projectPath));
 
   if (inFlightRequests.has(singleFlightKey)) {
     logger.info('🔁 Single-flight: returning existing in-flight result for local_context', {

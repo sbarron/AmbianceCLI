@@ -38,7 +38,7 @@ The first valid packed baseline failed eight of its 30 checks: summary paths, ne
 
 ## Excluded indexer-test triage
 
-All 20 historical failures have individual entries in [the triage ledger](../artifacts/release-acceptance/2026-11-13/indexer-triage.json). They used obsolete parser/project mocks, an unused injected logger, assignments to read-only namespace exports, stale debounce assumptions or assertions about log messages rather than behavior. The cloud-error test also expected failure where the documented behavior is local fallback.
+All 20 historical failures have individual entries in the source checkout's `artifacts/release-acceptance/2026-11-13/indexer-triage.json`. They used obsolete parser/project mocks, an unused injected logger, assignments to read-only namespace exports, stale debounce assumptions or assertions about log messages rather than behavior. The cloud-error test also expected failure where the documented behavior is local fallback.
 
 The suite now contains 28 behavior tests and runs in default Jest and CI. Running those repaired tests against the captured original indexer reproduces six product failures: cloud isolation, generation-error reporting, stop cancellation, failed-update retry, unchanged local work and queue serialization. All six pass with the fixes.
 
@@ -46,7 +46,7 @@ The complete suite additionally exposed a stale fixture missing the current chun
 
 ## Evidence and reproduction
 
-Local records are under [artifacts/release-acceptance/2026-11-13](../artifacts/release-acceptance/2026-11-13):
+The source checkout holds these local records in `artifacts/release-acceptance/2026-11-13/`.
 
 - `accepted-candidate.tgz`: accepted package; SHA-256 `a9971794f274b98f664fea15fa82a22f6b83d0a093f9cdd66b59fd219972bace`.
 - `accepted/acceptance.json`: 34 checks and 38 CLI process observations; 29 actual inference inputs.

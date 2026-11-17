@@ -506,7 +506,19 @@ function calculateRecencyBoost(candidate: CandidateSymbol, projectContext: any):
     const path = require('path');
 
     // Use file modification time as a proxy for recency
-    const filePath = path.join(projectContext?.projectPath || '', candidate.file || '');
+    const candidatePath = candidate.file || '';
+    const normalized = candidatePath.replace(/\\/g, '/');
+    const indexedFile = projectContext?.files?.find(
+      (file: FileInfo) =>
+        file.absPath.replace(/\\/g, '/') === normalized ||
+        file.relPath.replace(/\\/g, '/') === normalized
+    );
+    // Route detectors can return relative paths. Anchor them to the request's
+    // file index, never the MCP server's unrelated working directory.
+    const filePath = indexedFile?.absPath ||
+      (path.isAbsolute(candidatePath) ? candidatePath :
+        projectContext?.projectPath ? path.resolve(projectContext.projectPath, candidatePath) : undefined);
+    if (!filePath) return 0.5;
     const stats = fs.statSync(filePath);
     const daysSinceModified = (Date.now() - stats.mtime.getTime()) / (1000 * 60 * 60 * 24);
 

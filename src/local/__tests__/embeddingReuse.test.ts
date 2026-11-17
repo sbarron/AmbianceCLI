@@ -62,6 +62,31 @@ describe('persistent local embedding reuse', () => {
   const refresh = (generator: any, force = false) =>
     generator.generateFileEmbeddings('project', file, project, { batchSize: 16, force });
 
+  it('keeps overlapping chunks aligned with actual source lines, including blanks and long lines', async () => {
+    for (const newline of ['\n', '\r\n']) {
+      const lines = [
+        '',
+        '',
+        ...Array.from({ length: 40 }, (_, i) => `${i}: β ${'x'.repeat(i === 14 ? 300 : 15)}`),
+        '',
+        '',
+      ];
+      const result = await generator.simpleChunkContent(lines.join(newline), 100, 100);
+      expect(result.length).toBeGreaterThan(5);
+      const covered = new Set<number>();
+      for (const chunk of result) {
+        expect(chunk.content.replace(/\r\n/g, '\n').trim()).toBe(
+          lines
+            .slice(chunk.startLine - 1, chunk.endLine)
+            .join('\n')
+            .trim()
+        );
+        for (let n = chunk.startLine; n <= chunk.endLine; n++) covered.add(n);
+      }
+      expect([...covered]).toHaveLength(lines.length);
+    }
+  });
+
   it('reuses unchanged input after indices and line ranges move, then invalidates on model settings', async () => {
     await refresh(generator);
     const prior = rows.map(row => row.embedding);

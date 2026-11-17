@@ -1,6 +1,6 @@
 {
   "name": "understand",
-  "description": "Build a concise understanding of a codebase area.",
+  "description": "Optional conceptual discovery preset; the agent directs subsequent exploration",
   "guards": {
     "maxTokens": 2000,
     "json": true
@@ -25,5 +25,5 @@
       ]
     }
   ],
-  "agentFollowUp": "Use symbols returned by the semantic frontier in one context --no-embeddings --format index query capped at 1200 tokens."
+  "agentFollowUp": "Discover using issue words or search a literal identifier, read selected refs with explore/local_explore, and follow relationships for evidence gaps. Batch queries and reads when useful; verify actual wiring. No call is mandatory."
 }

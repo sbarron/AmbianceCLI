@@ -131,6 +131,7 @@ export class LocalEmbeddingStorage {
   private db: Database.Database | null = null;
   private dbPath: string;
   private initialized = false;
+  private readonly readOnly: boolean;
   private enableQuantization: boolean;
   private quantizationMode: EmbeddingFormat; // 'float32' | 'int8' | 'turbo2' | 'turbo4'
   private turboRotationSeed: number;
@@ -156,7 +157,8 @@ export class LocalEmbeddingStorage {
   private getFileStmt: Database.Statement | null = null;
   private listProjectFilesStmt: Database.Statement | null = null;
 
-  constructor(customPath?: string, enableQuantization?: boolean) {
+  constructor(customPath?: string, enableQuantization?: boolean, options?: { readOnly?: boolean }) {
+    this.readOnly = options?.readOnly ?? false;
     // Use custom path or default to ~/.ambiance/embeddings.db
     if (customPath && process.env.USE_LOCAL_EMBEDDINGS === 'true') {
       this.dbPath = path.resolve(customPath, 'embeddings.db');
@@ -214,6 +216,23 @@ export class LocalEmbeddingStorage {
     if (this.initialized) return;
 
     try {
+      if (this.readOnly) {
+        // This path never creates, migrates, or repairs an index. Only prepare
+        // the statements needed for retrieval; unsupported schemas fail closed.
+        this.db = new Database(this.dbPath, { readonly: true, fileMustExist: true });
+        const version = this.db
+          .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
+          .get() as { version: number } | undefined;
+        if (version?.version !== CURRENT_SCHEMA_VERSION)
+          throw new Error('Unsupported index schema');
+        this.projectStmt = this.db.prepare('SELECT * FROM embeddings WHERE project_id = ?');
+        this.getProjectStmt = this.db.prepare('SELECT * FROM projects WHERE id = ?');
+        this.listProjectFilesStmt = this.db.prepare(
+          'SELECT * FROM files WHERE project_id = ? ORDER BY path'
+        );
+        this.initialized = true;
+        return;
+      }
       // Ensure directory exists
       const dbDir = path.dirname(this.dbPath);
       if (!fs.existsSync(dbDir)) {
@@ -1206,9 +1225,13 @@ export class LocalEmbeddingStorage {
     projectId: string,
     queryEmbedding: number[],
     limit: number = 10,
-    similarityThreshold: number = 0.2
+    similarityThreshold: number = 0.2,
+    preloadedChunks?: EmbeddingChunk[]
   ): Promise<SimilarChunk[]> {
-    const allEmbeddings = await this.getProjectEmbeddings(projectId);
+    const allEmbeddings = preloadedChunks ?? (await this.getProjectEmbeddings(projectId));
+    if (preloadedChunks?.some(chunk => chunk.projectId !== projectId)) {
+      throw new Error('Preloaded embeddings belong to another project');
+    }
 
     if (allEmbeddings.length === 0) {
       return [];

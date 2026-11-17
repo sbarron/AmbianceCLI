@@ -601,19 +601,30 @@ export class LocalEmbeddingGenerator {
       // not chunk index or line coordinates, which may move after an edit.
       const identity = this.getLocalInputIdentity();
       const format = this.storage.getQuantizationMode?.();
-      const reusable = identity && !options.force && (format === 'float32' || format === 'int8')
-        ? (await this.storage.getFileEmbeddings(projectId, fileId)) || [] : [];
+      const reusable =
+        identity && !options.force && (format === 'float32' || format === 'int8')
+          ? (await this.storage.getFileEmbeddings(projectId, fileId)) || []
+          : [];
       const cache = new Map<string, EmbeddingChunk>();
       const dimensions = this.localProvider?.getModelInfo().dimensions;
       for (const old of reusable) {
-        if (old.metadata.embeddingInputKey && old.metadata.embeddingDimensions === dimensions &&
-            old.metadata.embeddingFormat === format && !cache.has(old.metadata.embeddingInputKey)) {
+        if (
+          old.metadata.embeddingInputKey &&
+          old.metadata.embeddingDimensions === dimensions &&
+          old.metadata.embeddingFormat === format &&
+          !cache.has(old.metadata.embeddingInputKey)
+        ) {
           cache.set(old.metadata.embeddingInputKey, old);
         }
       }
       const texts = chunks.map(chunk => `File: ${relativePath}\n\n${chunk.content}`);
-      const keyFor = (input: string, model = identity) => model
-        ? crypto.createHash('sha256').update(JSON.stringify([model, format, input])).digest('hex') : undefined;
+      const keyFor = (input: string, model = identity) =>
+        model
+          ? crypto
+              .createHash('sha256')
+              .update(JSON.stringify([model, format, input]))
+              .digest('hex')
+          : undefined;
       const inputKeys = texts.map(text => keyFor(text));
       const cached = inputKeys.map(key => {
         return key ? cache.get(key) : undefined;
@@ -636,47 +647,86 @@ export class LocalEmbeddingGenerator {
       for (let i = 0; i < uniquePending.length; i += batchSize) {
         batches.push(uniquePending.slice(i, i + batchSize).map(index => texts[index]));
       }
-      const generated = batches.length ? (await this.generateBatchesEmbeddings(batches, options)).flat() : [];
-      if (generated.length !== uniquePending.length || generated.some(vector => !Array.isArray(vector) ||
-          !vector.length || vector.some(value => !Number.isFinite(value)))) {
+      const generated = batches.length
+        ? (await this.generateBatchesEmbeddings(batches, options)).flat()
+        : [];
+      if (
+        generated.length !== uniquePending.length ||
+        generated.some(
+          vector =>
+            !Array.isArray(vector) ||
+            !vector.length ||
+            vector.some(value => !Number.isFinite(value))
+        )
+      ) {
         throw new Error('Incomplete or invalid embedding response; existing file index retained');
       }
       const finalIdentity = this.getLocalInputIdentity();
-      if (identity !== finalIdentity && (cached.some(Boolean) || uniquePending.length < pending.length)) {
-        throw new Error('Local model changed during reused-input refresh; retry with the current model');
+      if (
+        identity !== finalIdentity &&
+        (cached.some(Boolean) || uniquePending.length < pending.length)
+      ) {
+        throw new Error(
+          'Local model changed during reused-input refresh; retry with the current model'
+        );
       }
-      const vectors: EmbeddingChunk['embedding'][] = cached.map(old => old?.embedding as EmbeddingChunk['embedding']);
+      const vectors: EmbeddingChunk['embedding'][] = cached.map(
+        old => old?.embedding as EmbeddingChunk['embedding']
+      );
       inferenceGroups.forEach((group, position) => {
-        group.forEach(index => { vectors[index] = generated[position]; });
+        group.forEach(index => {
+          vectors[index] = generated[position];
+        });
       });
 
       // Generate successfully before replacing the previous index or freshness stamp.
       await this.storage.storeFileMetadata({ ...fileMetadata, chunkLayoutVersion: undefined });
       await this.storage.deleteEmbeddingsByFile(fileId);
       for (let index = 0; index < chunks.length; index++) {
-        const chunk = chunks[index], embedding = vectors[index];
+        const chunk = chunks[index],
+          embedding = vectors[index];
         const embeddingMetadata = Array.isArray(embedding)
           ? this.getEmbeddingMetadata(this.getCurrentProvider(), embedding)
-          : { embeddingFormat: cached[index]!.metadata.embeddingFormat,
+          : {
+              embeddingFormat: cached[index]!.metadata.embeddingFormat,
               embeddingDimensions: cached[index]!.metadata.embeddingDimensions,
-              embeddingProvider: cached[index]!.metadata.embeddingProvider };
+              embeddingProvider: cached[index]!.metadata.embeddingProvider,
+            };
         await this.storage.storeEmbedding({
-          id: `${projectId}_${relativePath}_${chunk.index}`, projectId, fileId, filePath: relativePath,
-          chunkIndex: chunk.index, content: chunk.content, embedding,
-          metadata: { startLine: chunk.startLine, endLine: chunk.endLine, language, symbols: chunk.symbols,
-            type: chunk.type, ...embeddingMetadata, embeddingInputKey: keyFor(texts[index], finalIdentity) },
+          id: `${projectId}_${relativePath}_${chunk.index}`,
+          projectId,
+          fileId,
+          filePath: relativePath,
+          chunkIndex: chunk.index,
+          content: chunk.content,
+          embedding,
+          metadata: {
+            startLine: chunk.startLine,
+            endLine: chunk.endLine,
+            language,
+            symbols: chunk.symbols,
+            type: chunk.type,
+            ...embeddingMetadata,
+            embeddingInputKey: keyFor(texts[index], finalIdentity),
+          },
           hash: LocalEmbeddingStorage.generateContentHash(chunk.content, relativePath, chunk.index),
-          createdAt: new Date(), updatedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
         });
-        fileProgress.embeddings++;fileProgress.processedChunks++;
+        fileProgress.embeddings++;
+        fileProgress.processedChunks++;
       }
       // Only a complete write is eligible to pass future layout freshness checks.
       await this.storage.storeFileMetadata(fileMetadata);
       fileProgress.reusedEmbeddings = cached.filter(Boolean).length;
       fileProgress.deduplicatedEmbeddings = pending.length - uniquePending.length;
-      logger.debug('File embedding refresh complete', { file: relativePath,
-        generated: uniquePending.length, reused: fileProgress.reusedEmbeddings,
-        deduplicated: fileProgress.deduplicatedEmbeddings, total: chunks.length });
+      logger.debug('File embedding refresh complete', {
+        file: relativePath,
+        generated: uniquePending.length,
+        reused: fileProgress.reusedEmbeddings,
+        deduplicated: fileProgress.deduplicatedEmbeddings,
+        total: chunks.length,
+      });
     } catch (error) {
       const errorMsg = `Failed to generate embeddings: ${error instanceof Error ? error.message : String(error)}`;
       fileProgress.errors.push(errorMsg);
@@ -692,7 +742,8 @@ export class LocalEmbeddingGenerator {
 
   /** Remote-provider responses are deliberately excluded from persistent reuse. */
   private getLocalInputIdentity(): string | undefined {
-    if (this.getCurrentProvider() !== 'local' || process.env.USE_OPENAI_EMBEDDINGS === 'true') return undefined;
+    if (this.getCurrentProvider() !== 'local' || process.env.USE_OPENAI_EMBEDDINGS === 'true')
+      return undefined;
     if (!this.localProvider) this.localProvider = getDefaultLocalProvider();
     return this.localProvider.getCacheIdentity?.();
   }
@@ -1339,41 +1390,37 @@ export class LocalEmbeddingGenerator {
     const lines = content.split('\n');
     const chunks: any[] = [];
     let chunkIndex = 0;
-    let currentChunk = '';
+    let currentLines: string[] = [];
     let startLine = 1;
-    let currentLine = 1;
-
-    for (const line of lines) {
-      if (currentChunk.length + line.length + 1 > maxChunkSize && currentChunk.length > 0) {
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      const currentChunk = currentLines.join('\n');
+      if (currentChunk.length + line.length + 1 > maxChunkSize && currentChunk.trim()) {
         // Finish current chunk
         chunks.push({
           content: currentChunk.trim(),
           index: chunkIndex++,
           startLine,
-          endLine: currentLine - 1,
+          endLine: index,
           type: 'code' as const,
         });
 
         // Start new chunk with overlap
-        const overlapLines = currentChunk.split('\n').slice(-Math.ceil(overlapSize / 50));
-        currentChunk = overlapLines.join('\n') + '\n' + line;
-        startLine = currentLine - overlapLines.length + 1;
-      } else {
-        currentChunk += (currentChunk ? '\n' : '') + line;
-        if (!currentChunk.trim()) {
-          startLine = currentLine + 1;
-        }
+        const overlapCount = Math.min(currentLines.length - 1, Math.ceil(overlapSize / 50));
+        currentLines = overlapCount > 0 ? currentLines.slice(-overlapCount) : [];
+        startLine = index - currentLines.length + 1;
       }
-      currentLine++;
+      currentLines.push(line);
     }
 
     // Add final chunk
+    const currentChunk = currentLines.join('\n');
     if (currentChunk.trim()) {
       chunks.push({
         content: currentChunk.trim(),
         index: chunkIndex++,
         startLine,
-        endLine: currentLine - 1,
+        endLine: lines.length,
         type: 'code' as const,
       });
     }

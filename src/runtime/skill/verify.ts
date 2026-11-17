@@ -133,6 +133,22 @@ function validateAgentUsageGuidance(skillMdPath: string, errors: string[]): void
     return;
   }
 
+  // Guidance may be progressively disclosed from an explicitly linked local
+  // reference. Validate that maintained content too, without forcing the host
+  // agent to load every legacy workflow in the entrypoint.
+  const base = path.dirname(skillMdPath);
+  const links = [...raw.matchAll(/\]\((references\/[^)\s]+\.md)\)/g)].slice(0, 10);
+  for (const link of links) {
+    try {
+      const reference = fs.realpathSync(path.resolve(base, link[1]));
+      const relative = path.relative(fs.realpathSync(base), reference);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) throw Error('reference leaves skill directory');
+      raw += '\n' + fs.readFileSync(reference, 'utf8');
+    } catch {
+      errors.push(`skills/ambiance/SKILL.md linked guidance missing or invalid: ${link[1]}`);
+    }
+  }
+
   const requiredGuidance: Array<[string, RegExp]> = [
     ['adaptive hybrid workflow', /^## Adaptive Hybrid Workflow$/m],
     ['deterministic no-embedding example', /--format index[^\n]*--no-embeddings/],

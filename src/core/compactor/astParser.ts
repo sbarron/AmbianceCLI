@@ -282,7 +282,39 @@ export class ASTParser {
 
       // Traverse the AST and extract symbols
       const self = this;
+      const objectFunction = (memberPath: any, fn: any) => {
+        const member = memberPath.node;
+        if (member.computed || !(t.isIdentifier(member.key) || t.isStringLiteral(member.key)))
+          return;
+        const owner = memberPath.findParent(
+          (p: any) => p.isVariableDeclarator() && t.isIdentifier(p.node.id)
+        );
+        const name = t.isIdentifier(member.key) ? member.key.name : member.key.value;
+        symbols.push({
+          name,
+          type: 'method',
+          className: owner?.node.id.name || 'object',
+          isMethod: true,
+          signature: `${name}(${fn.params.map((p: any) => self.paramToString(p)).join(', ')})`,
+          startLine: member.loc?.start.line || 1,
+          endLine: member.loc?.end.line || 1,
+          isExported: owner ? self.isExported(owner.parentPath) : self.isExported(memberPath),
+          isAsync: !!fn.async,
+          parameters: self.extractMethodParameters(fn.params),
+          returnType: self.extractReturnType(fn),
+          docstring: self.extractLeadingComments(memberPath),
+          body: self.extractFunctionBody(fn),
+        });
+      };
       traverse(ast, {
+        ObjectMethod(memberPath) {
+          objectFunction(memberPath, memberPath.node);
+        },
+        ObjectProperty(memberPath) {
+          const value = memberPath.node.value;
+          if (t.isArrowFunctionExpression(value) || t.isFunctionExpression(value))
+            objectFunction(memberPath, value);
+        },
         // Function declarations
         FunctionDeclaration(path) {
           const node = path.node;

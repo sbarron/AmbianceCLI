@@ -1,0 +1,42 @@
+{
+  "name": "explore",
+  "description": "Agent-selected discovery, reads, and relationship expansion with reusable source references",
+  "defaults": {
+    "maxTokens": 6000
+  },
+  "command": "explore",
+  "args": [
+    "discover",
+    "${query}",
+    "--json",
+    "--project-path",
+    "${projectPath}",
+    "--max-tokens",
+    "${maxTokens}"
+  ],
+  "optionalArgs": [
+    "search <literal identifier, phrase, or path>",
+    "discover --queries '[\"first query\",\"second query\"]' --mode <lexical|hybrid>",
+    "read --ref <returned-ref>",
+    "read --selections '[{\"ref\":\"<first-ref>\"},{\"ref\":\"<second-ref>\"}]'",
+    "read --file-path <file> --symbol <name>",
+    "follow --ref <returned-ref> --relation <dependencies|references|routes>",
+    "status --session-id <id>"
+  ],
+  "outputSchema": {
+    "sessionId": "string - reuse for subsequent actions",
+    "targets": "array - ranked locations with match reasons and reusable refs",
+    "known": "array - compact previously discovered IDs",
+    "evidence": "array - explicitly selected whole source ranges only",
+    "deferred": "array - source which did not fit, never silently truncated",
+    "unresolved": "array - missing static links or HTTP prefix evidence",
+    "metadata": "object - scan and truncation scope",
+    "results": "array - per-query ranked results for a batch"
+  },
+  "notes": [
+    "Discovery ranks issue words lexically by default; hybrid uses a ready index or reports fallback",
+    "Search retains literal semantics; use discovery to recover from a zero-hit phrase",
+    "Copy refs into selected reads or follows; inspect source and verify actual wiring",
+    "Re-search after edits; stale references or IDs are rejected"
+  ]
+}

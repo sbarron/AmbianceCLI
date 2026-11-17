@@ -35,6 +35,7 @@ describe('embedding stale checks', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.USE_LOCAL_EMBEDDINGS = 'true';
+    require('fs').readFileSync.mockReturnValue('export const source = true;');
     mockStorage.getRecentlyUpdatedFiles.mockResolvedValue([
       {
         filePath: 'src/index.ts',
@@ -168,6 +169,24 @@ describe('embedding stale checks', () => {
     const { checkStaleFiles } = require('../src/runtime/embeddings/manageEmbeddings');
     const result = await checkStaleFiles({ projectPath: 'C:\\project', autoUpdate: false });
     expect(result.staleCount).toBe(1);
+    expect(result.newCount).toBe(0);
+    expect(result.incompleteCount).toBe(0);
+  });
+
+  test('does not endlessly repair a tracked BOM-only or whitespace-only file', async () => {
+    const fs = require('fs');
+    const time = new Date('2026-01-01T00:00:00.000Z');
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue('\uFEFF\n \t');
+    fs.statSync.mockReturnValue({ size: 7, mtime: time, isFile: () => true, isDirectory: () => false });
+    mockGlobby.mockResolvedValue(['pkg/__init__.py']);
+    mockStorage.listProjectFiles.mockResolvedValue([{ id: 'empty-file', projectId: 'project-1',
+      path: 'pkg/__init__.py', hash: 'hash', fileSize: 7, lastModified: time,
+      chunkLayoutVersion: EMBEDDING_CHUNK_LAYOUT_VERSION }]);
+    mockStorage.getRecentlyUpdatedFiles.mockResolvedValue([]);
+    const { checkStaleFiles } = require('../src/runtime/embeddings/manageEmbeddings');
+    const result = await checkStaleFiles({ projectPath: 'C:\\project', autoUpdate: false });
+    expect(result.staleCount).toBe(0);
     expect(result.newCount).toBe(0);
     expect(result.incompleteCount).toBe(0);
   });

@@ -464,6 +464,7 @@ const requestedServer = args.includes('--server') || args.includes('-s');
 // Tool commands
 const commands = [
   'context',
+  'explore',
   'hints',
   'summary',
   'manifest',
@@ -636,6 +637,9 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('');
   console.log('Commands:');
   console.log('  context                Semantic code compaction and context generation');
+  console.log(
+    '  explore                Agent-directed search, source reads, and relationship expansion'
+  );
   console.log('  hints                  Project structure analysis and navigation hints');
   console.log('  summary                Individual file analysis and symbol extraction');
   console.log('  manifest               Project-wide function/method listing for navigation');
@@ -737,6 +741,28 @@ function showCommandHelp(command: string): void {
   ];
 
   const blocks: Record<string, string[]> = {
+    explore: [
+      'ambiance explore <discover|search|read|follow|status>',
+      'Agent-directed source exploration. Discover ranks issue words; search is literal.',
+      '  discover "cancel upload retry"      Rank lexical candidates (default mode)',
+      '  discover --queries \'["cancel upload","retry handler"]\' --mode hybrid',
+      '  search "literal identifier/path"   Return compact source targets and sessionId',
+      '  read --ref <returned-ref>          Read a discovered target in another process',
+      '  read --selections \'[{"ref":"<first-ref>"},{"ref":"<second-ref>"}]\'',
+      '  read --session-id <id> --target-ids <id,...>   Return only selected complete source ranges',
+      '  read --file-path <file> --symbol <name>       Select a known source entry directly',
+      '  follow --session-id <id> --target-ids <id> --relation <dependencies|references|routes>',
+      '  follow --ref <returned-ref> --relation <dependencies|references|routes>',
+      '  status --session-id <id>          Check known targets and stale source revisions',
+      'Options: --query, --queries (JSON array), --mode (lexical|hybrid),',
+      '         --ref, --selections (JSON array), --max-targets (1-50), --max-tokens (256-16000),',
+      '         --start-line/--end-line for an explicit partial source read.',
+      'Use --json --project-path <root>. Reuse sessionId; search/follow return new targets',
+      'and compact known IDs. Reads do not replay unrelated context. Followed edges are',
+      'static/lexical candidates, not proven runtime execution. Resolve HTTP prefixes',
+      'before --relation routes --query "/verified/full/path".',
+      'Hybrid uses a ready local index or reports fallback; it does not build or repair one.',
+    ],
     context: [
       'ambiance context',
       '---------------',
@@ -1100,6 +1126,51 @@ async function executeToolCommand(
     let result: unknown;
 
     switch (command) {
+      case 'explore': {
+        const { handleExplore } = await import('./runtime/context/explore');
+        const allowed = [
+          'sessionId',
+          'query',
+          'queries',
+          'mode',
+          'ref',
+          'selections',
+          'scope',
+          'filePath',
+          'symbol',
+          'startLine',
+          'endLine',
+          'targetIds',
+          'relation',
+          'maxTargets',
+          'maxTokens',
+        ];
+        const positional = extractPositionalArgs(toolArgs, allowed);
+        const parsed = parseToolSpecificArgs(toolArgs, allowed);
+        for (const key of ['queries', 'selections']) {
+          if (parsed[key] !== undefined) {
+            if (typeof parsed[key] !== 'string') throw new Error(`--${key} requires a JSON array`);
+            try {
+              parsed[key] = JSON.parse(parsed[key] as string);
+            } catch {
+              throw new Error(`--${key} requires a valid JSON array`);
+            }
+            if (!Array.isArray(parsed[key])) throw new Error(`--${key} requires a JSON array`);
+          }
+        }
+        if (typeof parsed.targetIds === 'string')
+          parsed.targetIds = parsed.targetIds
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+        result = await handleExplore({
+          ...parsed,
+          action: positional[0] || 'search',
+          query: parsed.query ?? positional[1],
+          projectPath: globalOptions.projectPath || (await detectProjectPath()),
+        } as any);
+        break;
+      }
       case 'context': {
         const { handleSemanticCompact } = await import('./runtime/context/semanticCompact');
 

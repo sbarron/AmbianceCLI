@@ -17,6 +17,9 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { logger } from '../utils/logger';
 import { validateDynamicSignal, Message, ValidationError } from './validation';
 
+const reasoningEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+type ReasoningEffort = (typeof reasoningEfforts)[number];
+
 // Provider types
 export type ProviderType =
   | 'openai'
@@ -418,7 +421,10 @@ export class OpenAIService {
   private isReasoningModel(model?: string): boolean {
     if (!model) return false;
     const normalized = model.toLowerCase();
-    return normalized.startsWith('gpt-5');
+    return (
+      normalized.startsWith('gpt-5') ||
+      (this.providerConfig.name === 'OpenAI' && /^gpt-6(?:[.-]|$)/.test(normalized))
+    );
   }
 
   /**
@@ -533,11 +539,17 @@ export class OpenAIService {
    * Derive a reasoning effort value, preferring explicit settings and falling back to temperature
    */
   private resolveReasoningEffort(
-    params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming
-  ): 'low' | 'medium' | 'high' {
+    params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+    configuredEffort?: string
+  ): ReasoningEffort {
     const explicit = (params as any).reasoning;
     if (explicit && typeof explicit === 'object' && typeof explicit.effort === 'string') {
-      return explicit.effort as 'low' | 'medium' | 'high';
+      return explicit.effort as ReasoningEffort;
+    }
+    if (configuredEffort) {
+      const effort = reasoningEfforts.find(value => value === configuredEffort);
+      if (!effort) throw new Error(`Unsupported OPENAI_REASONING_EFFORT: ${configuredEffort}`);
+      return effort;
     }
 
     const temperature = typeof params.temperature === 'number' ? params.temperature : null;
@@ -730,8 +742,10 @@ export class OpenAIService {
       });
     }
 
-    const initialReasoningEffort = this.resolveReasoningEffort(params);
-    let reasoningEffort: 'low' | 'medium' | 'high' = initialReasoningEffort;
+    const configuredEffort =
+      this.providerConfig.name === 'OpenAI' ? process.env.OPENAI_REASONING_EFFORT : undefined;
+    const initialReasoningEffort = this.resolveReasoningEffort(params, configuredEffort);
+    let reasoningEffort = initialReasoningEffort;
 
     const baseMessages = this.transformMessagesToResponseInput(
       (params.messages as ChatCompletionMessageParam[]) || []
@@ -794,7 +808,7 @@ export class OpenAIService {
     let lastStatus: string | undefined;
     let lastIncompleteReason: string | undefined;
     let lastRequestMaxOutputTokens: number | undefined;
-    let lastRequestReasoningEffort: 'low' | 'medium' | 'high' = reasoningEffort;
+    let lastRequestReasoningEffort = reasoningEffort;
     const adjustments = {
       increasedMaxOutputTokens: false,
       loweredReasoningEffort: false,
@@ -807,7 +821,7 @@ export class OpenAIService {
         attempt += 1;
         const request = buildRequest();
         lastRequestMaxOutputTokens = request.max_output_tokens;
-        lastRequestReasoningEffort = request.reasoning?.effort as 'low' | 'medium' | 'high';
+        lastRequestReasoningEffort = reasoningEffort;
 
         logger.info('Creating reasoning response via Responses API', {
           model: targetModel,
@@ -851,7 +865,11 @@ export class OpenAIService {
             }
           }
 
-          if (!adjustments.loweredReasoningEffort && reasoningEffort !== 'low') {
+          if (
+            !configuredEffort &&
+            !adjustments.loweredReasoningEffort &&
+            reasoningEffort !== 'low'
+          ) {
             const nextEffort = reasoningEffort === 'high' ? 'medium' : 'low';
             reasoningEffort = nextEffort;
             adjustments.loweredReasoningEffort = true;

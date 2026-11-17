@@ -94,6 +94,14 @@ fs.writeFileSync(
 shellNpm(['install', '--omit=dev', '--no-audit', '--no-fund', tarball], consumer, 'install');
 const pkg = path.join(consumer, 'node_modules/@jackjackstudios/ambiance-cli');
 env.RC_PACKAGE_ROOT = pkg;
+const { EMBEDDING_CHUNK_LAYOUT_VERSION: expectedLayout } = require(
+  path.join(pkg, 'dist/src/local/embeddingDefaults.js')
+);
+assert.ok(
+  Number.isSafeInteger(expectedLayout) && expectedLayout > 1,
+  'Expected a layout newer than the legacy fixture'
+);
+result.expected_chunk_layout_version = expectedLayout;
 const cli = path.join(pkg, 'dist/src/cli.js');
 assert.ok(fs.existsSync(cli));
 assert.ok(!fs.existsSync(path.join(pkg, 'src/cli.ts')));
@@ -349,10 +357,14 @@ for (const [name, extension] of [
     ]);
     assert.ok(!c.data.embeddingSync?.error);
     assert.ok(rows(project).some(x => x.content.includes('999')));
-    assert.equal(files(project).find(x => normalized(x.path) === main).chunk_layout_version, 2);
+    const repaired = files(project).find(file => normalized(file.path) === main);
+    assert.ok(repaired, main);
+    assert.equal(repaired.chunk_layout_version, expectedLayout, main);
   });
   check(name + ': legacy layout repair preserves vectors', () => {
     const before = rows(project);
+    const pathsBefore = files(project).map(file => file.path).sort();
+    assert.ok(pathsBefore.length > 0);
     db(d =>
       d
         .prepare('UPDATE files SET chunk_layout_version=1 WHERE project_id=?')
@@ -360,7 +372,9 @@ for (const [name, extension] of [
     );
     command(project, ['context', 'invoiceTotal', '--embeddings', '--max-tokens', '1200']);
     assert.deepEqual(rows(project), before);
-    assert.ok(files(project).every(x => x.chunk_layout_version === 2));
+    const repaired = files(project);
+    assert.deepEqual(repaired.map(file => file.path).sort(), pathsBefore);
+    for (const file of repaired) assert.equal(file.chunk_layout_version, expectedLayout, file.path);
   });
 }
 result.passed = result.checks.every(c => c.passed);

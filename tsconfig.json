@@ -18,6 +18,7 @@
   "include": [
     "src/index.ts",
     "src/cli.ts",
+    "src/runtime/api.ts",
     "src/tools/**/*.ts",
     "src/compactor/**/*.ts",
     "src/client/apiClient.ts",
