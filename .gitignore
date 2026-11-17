@@ -9,6 +9,13 @@ dist/
 build/
 *.tsbuildinfo
 
+# Local release evidence, benchmark experiments and generated output
+/.artifacts/
+/.artifacts-*
+/artifacts/
+/benchmarks/
+/output/
+
 # Development files
 development/mcp-debug.log
 development/tests/temp/
