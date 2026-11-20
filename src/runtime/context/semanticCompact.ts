@@ -24,6 +24,7 @@ import {
 import { validateAndResolvePath } from '../utils/pathUtils';
 import * as path from 'path';
 import { contextRequestKey } from './requestKey';
+import { getLocalRetrievalProfile } from '../../local/localRetrievalProfile';
 import type {
   LocalContextResponse,
   SemanticChunkMatch,
@@ -82,6 +83,12 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       } = args;
 
       const excludeRegexes = compileExcludePatterns(excludePatterns);
+      if (
+        getLocalRetrievalProfile() &&
+        (!Number.isInteger(maxTokens) || maxTokens < 256 || maxTokens > 50000)
+      ) {
+        throw new Error('maxTokens must be an integer from 256 to 50000.');
+      }
 
       // Validate and resolve project path (now required)
       const resolvedProjectPath = validateAndResolvePath(projectPath);
@@ -124,6 +131,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         updated: false,
       };
 
+      let lifecycleStorage: any;
       if (embeddingsEnabled) {
         try {
           const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
@@ -136,6 +144,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             const { ProjectIdentifier } = await import('../../local/projectIdentifier');
 
             const storage = new LocalEmbeddingStorage();
+            lifecycleStorage = storage;
             const projectInfo =
               await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
             const projectId = projectInfo.id;
@@ -233,6 +242,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
             projectPath: resolvedProjectPath,
             error: syncError instanceof Error ? syncError.message : String(syncError),
           });
+        } finally {
+          await lifecycleStorage?.close?.();
         }
       }
 
@@ -240,6 +251,11 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       // Unified pipeline: always use enhanced local context when query is
       // provided.  Embeddings enhance ranking when available.
       // ──────────────────────────────────────────────────────────────────
+      if (query && !folderPath && embeddingsEnabled && getLocalRetrievalProfile()) {
+        const { localQualityContext } = await import('./localQualityContext');
+        return await localQualityContext(resolvedProjectPath, query, maxTokens, excludePatterns);
+      }
+
       if (query && !folderPath) {
         // System Map is its own specialized format
         if (format === 'system-map') {
@@ -377,7 +393,13 @@ export async function handleSemanticCompact(args: any): Promise<any> {
           });
 
           if (enhancedResult.success) {
-            const content = formatEnhancedContextOutput(enhancedResult, query, maxTokens, format, resolvedProjectPath);
+            const content = formatEnhancedContextOutput(
+              enhancedResult,
+              query,
+              maxTokens,
+              format,
+              resolvedProjectPath
+            );
             return {
               success: true,
               content,

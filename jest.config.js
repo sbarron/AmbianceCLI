@@ -6,6 +6,7 @@ const includeIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 const testMatch = ['**/src/**/*.test.ts', '**/tests/**/*.test.js'];
 
 const testPathIgnorePatterns = [
+  '<rootDir>/.artifacts/',
   '<rootDir>/benchmarks/',
   '<rootDir>/artifacts/',
   '<rootDir>/tools-old/',
@@ -33,7 +34,7 @@ module.exports = {
   testMatch,
   setupFiles: ['<rootDir>/tests/setupEnv.js'],
   testPathIgnorePatterns,
-  modulePathIgnorePatterns: ['<rootDir>/benchmarks/', '<rootDir>/artifacts/'],
+  modulePathIgnorePatterns: ['<rootDir>/benchmarks/', '<rootDir>/artifacts/', '<rootDir>/.artifacts/'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   transform: {
     '^.+\\.ts$': [

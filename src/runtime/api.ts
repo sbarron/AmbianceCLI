@@ -2,7 +2,18 @@
 import type { HandoffCommandArgs } from './handoff/service';
 
 export const runtimeApiVersion = 1;
+export const runtimeCapabilities = {
+  localRetrievalProfiles: ['default', 'qwen3'] as const,
+  lazyEmbeddingProviders: true,
+  configurableQwenIdleTimeout: true,
+};
 export const runtimeVersion: string = require('@jackjackstudios/ambiance-cli/package.json').version;
+
+/** Release runtime-owned model workers when the host adapter shuts down. */
+export async function disposeRuntime(): Promise<void> {
+  const { disposeDefaultProvider } = await import('../local/localEmbeddingProvider');
+  await disposeDefaultProvider();
+}
 
 export type RuntimeOperation =
   | 'context'

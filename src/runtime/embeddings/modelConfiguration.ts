@@ -1,9 +1,14 @@
+import { getLocalRetrievalProfile } from '../../local/localRetrievalProfile';
+
 export async function getCurrentModelConfiguration(): Promise<{
   provider: string;
   model: string;
   dimensions: number;
-  format: 'int8' | 'float32';
+  format: 'int8' | 'float32' | 'turbo4';
 }> {
+  const profile = getLocalRetrievalProfile();
+  if (profile)
+    return { provider: profile.provider, model: profile.model, dimensions: 512, format: 'turbo4' };
   let localConfig = {
     provider: 'local',
     model: 'transformers.js',

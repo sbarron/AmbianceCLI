@@ -12,7 +12,11 @@ import { logger } from '../../utils/logger';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import { LocalEmbeddingStorage, type EmbeddingChunk } from '../../local/embeddingStorage';
 import { LocalEmbeddingGenerator } from '../../local/embeddingGenerator';
-import { DEFAULT_EMBEDDING_CHUNK_SIZE, EMBEDDING_CHUNK_LAYOUT_VERSION } from '../../local/embeddingDefaults';
+import {
+  DEFAULT_EMBEDDING_CHUNK_SIZE,
+  EMBEDDING_CHUNK_LAYOUT_VERSION,
+} from '../../local/embeddingDefaults';
+import { getLocalRetrievalProfile } from '../../local/localRetrievalProfile';
 import { ProjectIdentifier } from '../../local/projectIdentifier';
 import { discoverIndexableProjectFiles } from './indexableFiles';
 import {
@@ -442,7 +446,7 @@ export async function runEmbeddingHealthCheck(args: {
       );
     }
 
-    if (process.env.OPENAI_API_KEY) {
+    if (process.env.OPENAI_API_KEY && !getLocalRetrievalProfile()) {
       try {
         const testEmbedding = await generator.generateQueryEmbedding('health-check probe');
         if (!testEmbedding || testEmbedding.length === 0) {
@@ -565,7 +569,7 @@ export async function createProjectEmbeddings(args: {
       }
     }
 
-    await storage.clearProjectEmbeddings(projectId);
+    if (!getLocalRetrievalProfile()) await storage.clearProjectEmbeddings(projectId);
 
     const parallelMode = process.env.EMBEDDING_PARALLEL_MODE === 'true';
     const maxConcurrency = parseInt(process.env.EMBEDDING_MAX_CONCURRENCY || '', 10) || 10;
@@ -579,6 +583,16 @@ export async function createProjectEmbeddings(args: {
       parallelMode,
       maxConcurrency,
     });
+
+    if (getLocalRetrievalProfile() && progress.errors.length) {
+      return {
+        success: false,
+        projectId,
+        progress,
+        message: 'Local quality indexing failed; previous file records were retained.',
+        errors: progress.errors,
+      };
+    }
 
     const currentModelConfig = await getCurrentModelConfiguration();
     const postMigrationCompatibility = await storage.validateEmbeddingCompatibility(
@@ -1053,8 +1067,11 @@ export async function checkStaleFiles(args: {
       // File metadata can survive a failed or interrupted embedding write.
       // Treat zero-chunk files as incomplete even when timestamp and size look
       // current; otherwise status reports false 100% coverage forever.
-      if (diskStats.size > 0 && (embeddingCountByFileId.get(dbFile.id) || 0) === 0 &&
-          fs.readFileSync(fullPath, 'utf8').trim().length > 0) {
+      if (
+        diskStats.size > 0 &&
+        (embeddingCountByFileId.get(dbFile.id) || 0) === 0 &&
+        fs.readFileSync(fullPath, 'utf8').trim().length > 0
+      ) {
         incompleteFiles.push({
           filePath: dbFile.path,
           fileId: dbFile.id,
@@ -1065,8 +1082,11 @@ export async function checkStaleFiles(args: {
       // If disk file is newer than database, or its size differs, it's stale.
       // Size catches edits when filesystem timestamp precision or restoration
       // causes mtime comparisons to be inconclusive.
-      if (diskTimestamp > dbTimestamp || diskStats.size !== dbFile.fileSize ||
-          dbFile.chunkLayoutVersion !== EMBEDDING_CHUNK_LAYOUT_VERSION) {
+      if (
+        diskTimestamp > dbTimestamp ||
+        diskStats.size !== dbFile.fileSize ||
+        dbFile.chunkLayoutVersion !== EMBEDDING_CHUNK_LAYOUT_VERSION
+      ) {
         const timeDiff = diskTimestamp.getTime() - dbTimestamp.getTime();
         staleFiles.push({
           filePath: dbFile.path,

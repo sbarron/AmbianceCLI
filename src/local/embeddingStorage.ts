@@ -17,6 +17,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { logger } from '../utils/logger';
+import { getLocalRetrievalProfile } from './localRetrievalProfile';
 
 import {
   QuantizedEmbedding,
@@ -176,6 +177,16 @@ export class LocalEmbeddingStorage {
       }
     }
 
+    const profile = getLocalRetrievalProfile();
+    if (profile) {
+      this.dbPath = path.join(
+        path.dirname(this.dbPath),
+        'profiles',
+        profile.storageKey,
+        'embeddings.db'
+      );
+    }
+
     // Enable quantization by default for new installations, or based on explicit setting
     this.enableQuantization = enableQuantization ?? process.env.EMBEDDING_QUANTIZATION === 'true';
 
@@ -194,6 +205,11 @@ export class LocalEmbeddingStorage {
     // Deterministic rotation seed for turbo quantization (per-installation, stable)
     // Users can override via TURBO_ROTATION_SEED for reproducibility across machines
     this.turboRotationSeed = parseInt(process.env.TURBO_ROTATION_SEED || '42', 10);
+    if (profile) {
+      this.quantizationMode = profile.quantization;
+      this.enableQuantization = true;
+      this.turboRotationSeed = profile.rotationSeed;
+    }
 
     // Initialize quota management
     this.enableQuotas = process.env.EMBEDDING_QUOTAS === 'true';
@@ -918,6 +934,82 @@ export class LocalEmbeddingStorage {
   /**
    * Get all embeddings for a project
    */
+  async replaceQualityFile(file: FileMetadata, chunks: EmbeddingChunk[]): Promise<void> {
+    const profile = getLocalRetrievalProfile();
+    if (!profile) throw new Error('Atomic quality writes require the qwen3 profile.');
+    await this.initializeDatabase();
+    if (!this.db || !this.insertFileStmt || !this.insertStmt || !this.updateStmt)
+      throw new Error('Database is not initialized.');
+    const rows = chunks.map(chunk => {
+      if (
+        chunk.projectId !== file.projectId ||
+        chunk.fileId !== file.id ||
+        chunk.filePath !== file.path ||
+        chunk.metadata.embeddingProvider !== profile.provider ||
+        chunk.metadata.embeddingDimensions !== 512
+      ) {
+        throw new Error('Quality file replacement contains incompatible embedding metadata.');
+      }
+      const value = Array.isArray(chunk.embedding)
+        ? turboQuantize(chunk.embedding, 4, profile.rotationSeed)
+        : chunk.embedding;
+      if (
+        !isTurboQuantized(value) ||
+        value.bits !== 4 ||
+        value.dimensions !== 512 ||
+        value.rotationSeed !== profile.rotationSeed ||
+        value.data.length !== 256 ||
+        !Number.isFinite(value.norm) ||
+        value.norm <= 0
+      )
+        throw new Error('Invalid quality vector.');
+      return { chunk, buffer: serializeTurboEmbedding(value) };
+    });
+    if (this.enableQuotas) {
+      const quota = await this.checkAndEnforceQuota(
+        file.projectId,
+        rows.reduce((sum, row) => sum + row.buffer.length, 0)
+      );
+      if (!quota.canStore) throw new Error('Local quality index quota exceeded.');
+    }
+    this.db.transaction(() => {
+      this.insertFileStmt!.run(
+        file.id,
+        file.projectId,
+        file.path,
+        file.hash,
+        file.lastModified.toISOString(),
+        file.fileSize,
+        file.language || null,
+        file.lineCount || null,
+        file.chunkLayoutVersion ?? null
+      );
+      this.db!.prepare('DELETE FROM embeddings WHERE file_id = ?').run(file.id);
+      for (const { chunk, buffer } of rows) {
+        this.insertStmt!.run(
+          chunk.id,
+          chunk.projectId,
+          chunk.fileId,
+          chunk.filePath,
+          chunk.chunkIndex,
+          chunk.content,
+          buffer,
+          chunk.metadata.type,
+          chunk.metadata.language || null,
+          chunk.metadata.symbols ? JSON.stringify(chunk.metadata.symbols) : null,
+          chunk.metadata.startLine || null,
+          chunk.metadata.endLine || null,
+          'turbo4',
+          512,
+          profile.provider,
+          chunk.hash,
+          chunk.metadata.embeddingInputKey || null
+        );
+      }
+      this.updateStmt!.run(file.projectId, file.projectId, file.projectId);
+    })();
+  }
+
   async getProjectEmbeddings(projectId: string): Promise<EmbeddingChunk[]> {
     if (!this.initialized) {
       await this.initializeDatabase();
@@ -1944,6 +2036,7 @@ export class LocalEmbeddingStorage {
 
       const norm = (label: string) => {
         const l = (label || '').toLowerCase();
+        if (l.startsWith('local-qwen3-')) return label;
         if (l.startsWith('text-embedding-')) return 'openai';
         if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance') return 'voyageai';
         if (l.includes('minilm') || l.includes('transformers')) return 'local';
@@ -1997,6 +2090,7 @@ export class LocalEmbeddingStorage {
       // Normalize provider labels (handle legacy rows that stored model as provider)
       const norm = (label: string) => {
         const l = (label || '').toLowerCase();
+        if (l.startsWith('local-qwen3-')) return label;
         if (l.startsWith('text-embedding-')) return 'openai';
         if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance') return 'voyageai';
         if (l.includes('minilm') || l.includes('transformers') || l.includes('e5')) return 'local';
@@ -3016,6 +3110,8 @@ export class LocalEmbeddingStorage {
    * Enable or disable quantization for future embeddings
    */
   setQuantizationEnabled(enabled: boolean): void {
+    if (getLocalRetrievalProfile() && !enabled)
+      throw new Error('The qwen3 profile requires turbo4 storage.');
     this.enableQuantization = enabled;
     if (!enabled) this.quantizationMode = 'float32';
     logger.info('🔧 Quantization setting updated', { enabled, mode: this.quantizationMode });
@@ -3026,6 +3122,8 @@ export class LocalEmbeddingStorage {
    * Modes: 'float32' (off), 'int8' (legacy), 'turbo2' (2-bit turbo), 'turbo4' (4-bit turbo)
    */
   setQuantizationMode(mode: EmbeddingFormat): void {
+    if (getLocalRetrievalProfile() && mode !== 'turbo4')
+      throw new Error('The qwen3 profile requires turbo4 storage.');
     this.quantizationMode = mode;
     this.enableQuantization = mode !== 'float32';
     logger.info('🔧 Quantization mode updated', { mode, enabled: this.enableQuantization });
@@ -3042,6 +3140,8 @@ export class LocalEmbeddingStorage {
    * Set the rotation seed for turbo quantization
    */
   setTurboRotationSeed(seed: number): void {
+    if (getLocalRetrievalProfile() && seed !== 42)
+      throw new Error('The qwen3 profile requires rotation seed 42.');
     this.turboRotationSeed = seed;
     logger.info('🔧 Turbo rotation seed updated', { seed });
   }

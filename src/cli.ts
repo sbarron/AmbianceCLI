@@ -485,7 +485,6 @@ const commands = [
   'ambiance_stop_watching',
   'ambiance_get_indexing_status',
 ];
-const isToolCommand = args.length > 0 && commands.includes(args[0]);
 
 // Parse global options
 function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining: string[] } {
@@ -524,6 +523,8 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
         options.useEmbeddings = true;
       } else if (arg === '--no-embeddings') {
         options.useEmbeddings = false;
+      } else if (arg === '--local-profile' && i + 1 < args.length) {
+        options.localProfile = args[++i];
       } else if (arg === '--exclude-patterns' && i + 1 < args.length) {
         options.excludePatterns = args[++i]
           .split(',')
@@ -555,6 +556,7 @@ function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining
 }
 
 const { options: globalOptions, remaining } = parseGlobalOptions(args);
+const isToolCommand = remaining.length > 0 && commands.includes(remaining[0]);
 
 function isJsonMode(options: GlobalOptions): boolean {
   return (
@@ -634,6 +636,7 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('  --env-help             Shortcut for --help --expanded');
   console.log('  --version, -V          Show version information');
   console.log('  --quiet                Suppress non-essential stderr logging');
+  console.log('  --local-profile NAME   Local retrieval profile: default or qwen3');
   console.log('');
   console.log('Commands:');
   console.log('  context                Semantic code compaction and context generation');
@@ -2545,8 +2548,26 @@ function formatToolOutput(result: unknown, options: GlobalOptions): string {
 
 // Main CLI logic
 async function main() {
+  if (globalOptions.localProfile !== undefined) {
+    process.env.AMBIANCE_LOCAL_PROFILE = String(globalOptions.localProfile);
+  }
+  try {
+    const { getLocalRetrievalProfile } = await import('./local/localRetrievalProfile');
+    if (getLocalRetrievalProfile()) {
+      process.env.DO_NOT_TRACK = '1';
+      process.env.OTEL_SDK_DISABLED = 'true';
+      process.env.HF_HUB_DISABLE_TELEMETRY = '1';
+      process.env.HF_HUB_OFFLINE = '1';
+    }
+  } catch (error) {
+    exitWithError({
+      options: globalOptions,
+      message: error instanceof Error ? error.message : String(error),
+      exitCode: EXIT_CODES.USAGE_ERROR,
+    });
+  }
   if (isToolCommand && isHelp) {
-    showCommandHelp(args[0]);
+    showCommandHelp(remaining[0]);
     process.exit(0);
   } else if (isHelp) {
     showHelp({ expanded: wantsExpandedHelp });
@@ -2583,7 +2604,12 @@ async function main() {
 }
 
 // Run main function
-main().catch(error => {
-  console.error('CLI Error:', error);
-  process.exit(1);
-});
+main()
+  .finally(async () => {
+    const { disposeDefaultProvider } = await import('./local/localEmbeddingProvider');
+    await disposeDefaultProvider();
+  })
+  .catch(error => {
+    console.error('CLI Error:', error);
+    process.exit(1);
+  });

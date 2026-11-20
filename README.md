@@ -8,15 +8,31 @@ Ask a code question and get ranked source locations, key symbols, and configurat
 
 ![ambiance context demo](https://raw.githubusercontent.com/sbarron/AmbianceCLI/master/demo/context-scenario-c-demo.gif)
 
-## 0.7.0 release candidate
+## What's new in 0.7.0
 
-The prepared `0.7.0-rc.1` adds multi-term discovery, batched searches and reads,
-reusable source references, explicit empty-result recovery, and numbered source
-delivery to AI advisers and their callers. Lexical discovery is the default;
-hybrid discovery uses an existing ready local index and reports fallback.
-See the [candidate notes](docs/discovery-release-candidate.md) for validation
-status and release order. Publish candidates under `rc`, and reserve `latest`
-for stable releases.
+This release adds multi-term discovery, batched searches and reads, reusable
+source references, and numbered source for AI advice. Discovery starts with
+lexical search. Hybrid discovery uses an existing ready local index and
+reports when it falls back to lexical search.
+
+## Optional Qwen profile for larger codebases
+
+Ambiance CLI uses its lightweight MiniLM local profile by default. For larger
+codebases, try **Qwen3-Embedding-0.6B plus BM25** when you need to find
+behavior across modules using issue wording. Ambiance MCP 0.4.0 uses
+this profile by default for semantic context.
+
+Prepare Python, PyTorch and the local model
+cache using the [Qwen setup guide](docs/local-quality-profile.md), then run
+from your project directory:
+
+```bash
+ambiance context "How are duplicate uploads handled?" --local-profile qwen3
+```
+
+The first lookup can build a separate Qwen index. Set
+`AMBIANCE_LOCAL_PROFILE=qwen3` in your environment to opt in for a session,
+or use `--local-profile default` to select MiniLM explicitly.
 
 ## Earlier 0.6.0 update
 
@@ -24,16 +40,12 @@ for stable releases.
 - Keep indexes current across file additions, renames and deletions; recover interrupted writes and report inference failures.
 - Fix project-relative imports and summary paths, plus watcher retries and shutdown cleanup.
 
-The earlier 0.6.0 candidate passed 34 installed-package lifecycle checks locally.
-Its [acceptance report](docs/release-acceptance-2026-11-13.md) is historical and
-does not establish validation of the current candidate.
-
 ## Install
 
-Requires Node.js 22 or newer. Use a patched Node.js 22 or 24 LTS release. After the candidate is published, install the pinned version below. For the stable release, omit the version suffix.
+Requires Node.js 22 or newer. Use a patched Node.js 22 or 24 LTS release.
 
 ```bash
-npm install -g @jackjackstudios/ambiance-cli@0.7.0-rc.1
+npm install -g @jackjackstudios/ambiance-cli@latest
 ```
 
 ### Install Agent Skill
@@ -157,9 +169,9 @@ MCP remains available as a compatibility path, but CLI is now the primary interf
 
 - Bridge command: `ambiance migrate mcp-map --json`
 
-MCP 0.4.0-rc.1 uses this package's supported `@jackjackstudios/ambiance-cli/runtime` export.
+MCP 0.4.0 uses this package's supported `@jackjackstudios/ambiance-cli/runtime` export.
 Retrieval and index improvements belong here; MCP owns protocol schemas and response limits.
-See the [paired MCP evaluation](docs/mcp-interface-evaluation-2026-11-15.md) for
+See the [paired MCP evaluation](https://github.com/sbarron/AmbianceCLI/blob/master/docs/mcp-interface-evaluation-2026-11-15.md) for
 retrieval parity, local embedding maintenance, and the bounded interface-choice pilot.
 
 ```js
@@ -186,7 +198,7 @@ or environment per request. Context requests coalesce only when every input matc
 - Use explicit `--project-path` for deterministic runs.
 
 Local embedding refreshes reuse unchanged inference inputs and group batches by length.
-See [local embedding refresh](docs/local-embedding-efficiency.md) for cache compatibility and rebuild limits.
+See [local embedding refresh](https://github.com/sbarron/AmbianceCLI/blob/master/docs/local-embedding-efficiency.md) for cache compatibility and rebuild limits.
 
 ## Development
 

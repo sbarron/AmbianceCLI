@@ -1,0 +1,5 @@
+# Optional local qwen3 profile only; these are not CLI/npm dependencies.
+# Install a PyTorch build appropriate for your CPU/CUDA platform separately.
+torch>=2.6,<3
+transformers>=4.51,<6
+tiktoken>=0.8,<1

@@ -4,6 +4,8 @@
  */
 
 import { logger } from '../utils/logger';
+import { getLocalRetrievalProfile } from './localRetrievalProfile';
+import { QwenEmbeddingProvider, type PlannedEmbeddingChunk } from './qwenEmbeddingProvider';
 
 // Dynamic import for ESM-only transformers package
 let transformersModule: any = null;
@@ -29,6 +31,22 @@ export interface EmbeddingResult {
   embedding: number[];
   model: string;
   dimensions: number;
+}
+
+export interface LocalEmbeddingBackend {
+  generateEmbeddings(texts: string[]): Promise<EmbeddingResult[]>;
+  generateEmbedding(text: string): Promise<EmbeddingResult>;
+  generateQueryEmbedding?(text: string): Promise<EmbeddingResult>;
+  planChunks?(content: string, filePath: string): Promise<PlannedEmbeddingChunk[]>;
+  getModelInfo(): {
+    name: string;
+    provider: string;
+    dimensions: number;
+    maxLength: number;
+    offline: boolean;
+  };
+  getCacheIdentity(): string;
+  dispose(): Promise<void>;
 }
 
 export interface LocalEmbeddingConfig {
@@ -189,10 +207,14 @@ export class LocalEmbeddingProvider {
 
     // Limit padding within a call without changing input text or output order.
     // Sub-batches meet the same limits, so recursive calls take the normal path.
-    const ordered = validTexts.map((text, index) => ({ text, index,
-      length: Math.max(1, Math.min(text.length, this.config.maxLength * 4)) }))
+    const ordered = validTexts
+      .map((text, index) => ({
+        text,
+        index,
+        length: Math.max(1, Math.min(text.length, this.config.maxLength * 4)),
+      }))
       .sort((a, b) => a.length - b.length || a.index - b.index);
-    const batches: typeof ordered[] = [];
+    const batches: (typeof ordered)[] = [];
     for (const item of ordered) {
       const last = batches[batches.length - 1];
       if (!last || last.length >= 16 || item.length > last[0].length * 2) batches.push([item]);
@@ -203,7 +225,9 @@ export class LocalEmbeddingProvider {
       for (const batch of batches) {
         const embedded = await this.generateEmbeddings(batch.map(item => item.text));
         if (embedded.length !== batch.length) throw new Error('Incomplete embedding sub-batch');
-        batch.forEach((item, index) => { results[item.index] = embedded[index]; });
+        batch.forEach((item, index) => {
+          results[item.index] = embedded[index];
+        });
       }
       return results;
     }
@@ -548,8 +572,13 @@ export class LocalEmbeddingProvider {
 
   /** Bump the input version if preprocessing or inference semantics change. */
   getCacheIdentity(): string {
-    return JSON.stringify({ inputVersion: 1, model: this.model, maxLength: this.config.maxLength,
-      normalize: this.config.normalize, pooling: this.config.pooling });
+    return JSON.stringify({
+      inputVersion: 1,
+      model: this.model,
+      maxLength: this.config.maxLength,
+      normalize: this.config.normalize,
+      pooling: this.config.pooling,
+    });
   }
 
   /**
@@ -565,10 +594,14 @@ export class LocalEmbeddingProvider {
 }
 
 // Singleton instance for global use
-let defaultProvider: LocalEmbeddingProvider | null = null;
+let defaultProvider: LocalEmbeddingBackend | null = null;
 
-export function getDefaultLocalProvider(config?: LocalEmbeddingConfig): LocalEmbeddingProvider {
+export function getDefaultLocalProvider(config?: LocalEmbeddingConfig): LocalEmbeddingBackend {
   if (!defaultProvider) {
+    if (getLocalRetrievalProfile()) {
+      defaultProvider = new QwenEmbeddingProvider();
+      return defaultProvider;
+    }
     // If no config provided and we have LOCAL_EMBEDDING_MODEL set, use it
     if (!config && process.env.LOCAL_EMBEDDING_MODEL) {
       const envModel = process.env.LOCAL_EMBEDDING_MODEL.trim().toLowerCase();

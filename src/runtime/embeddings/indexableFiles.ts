@@ -3,6 +3,7 @@ import { loadIgnorePatterns } from '../../local/projectIdentifier';
 import { importEsm } from '../utils/esmImport';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getLocalRetrievalProfile } from '../../local/localRetrievalProfile';
 
 const INDEXABLE_FILE_PATTERNS = [
   '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,cpp,c,cc,cxx,h,hpp,hh,hxx,cs,rb,php,swift,kt,kts,scala,clj,hs,lhs,ml,r,sql,sh,bash,zsh,ex,exs,lua,md,mdx,json,yaml,yml,xml,html,htm,css,scss,sass,less,astro,vue,svelte}',
@@ -44,8 +45,7 @@ function shouldIgnoreIndexableFile(filePath: string): boolean {
       part === 'coverage' ||
       part.startsWith('.') ||
       part.includes('.min.') ||
-      part.includes('.test.') ||
-      part.includes('.spec.')
+      (!getLocalRetrievalProfile() && (part.includes('.test.') || part.includes('.spec.')))
     ) {
       return true;
     }
@@ -86,10 +86,13 @@ async function loadAdditionalIgnorePatterns(projectPath: string): Promise<string
   return ignorePatterns;
 }
 
-export async function discoverIndexableProjectFiles(projectPath: string): Promise<string[]> {
+export async function discoverIndexableProjectFiles(
+  projectPath: string,
+  patterns: string[] = INDEXABLE_FILE_PATTERNS
+): Promise<string[]> {
   const { globby } = await importEsm<typeof import('globby')>('globby');
   const ignore = await loadAdditionalIgnorePatterns(projectPath);
-  const files = await globby(INDEXABLE_FILE_PATTERNS, {
+  const files = await globby(patterns, {
     cwd: projectPath,
     gitignore: true,
     ignoreFiles: ['.gitignore', '.cursorignore', '.vscodeignore', '.ambianceignore'],

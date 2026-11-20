@@ -30,12 +30,14 @@ import { TreeSitterProcessor } from './treeSitterProcessor';
 import { openaiService } from '../core/openaiService';
 import { apiClient } from '../client/apiClient';
 import {
-  LocalEmbeddingProvider,
+  LocalEmbeddingBackend,
   getDefaultLocalProvider,
   EmbeddingResult,
 } from './localEmbeddingProvider';
 import { ProjectIdentifier } from './projectIdentifier';
 import { DEFAULT_EMBEDDING_CHUNK_SIZE, EMBEDDING_CHUNK_LAYOUT_VERSION } from './embeddingDefaults';
+import { getLocalRetrievalProfile } from './localRetrievalProfile';
+import { isTurboQuantized } from './quantization';
 
 /**
  * Simple semaphore implementation for concurrency control
@@ -100,7 +102,7 @@ export interface GenerationOptions extends ChunkingOptions {
 
 export class LocalEmbeddingGenerator {
   private openai: OpenAI | null = null;
-  private localProvider: LocalEmbeddingProvider | null = null;
+  private localProvider: LocalEmbeddingBackend | null = null;
   private storage: LocalEmbeddingStorage;
   private treeSitter: TreeSitterProcessor | null = null;
   private readonly treeSitterReady: Promise<void>;
@@ -157,7 +159,9 @@ export class LocalEmbeddingGenerator {
     logger.info('✅ Local embedding provider (transformers.js) available as default');
 
     // Initialize TreeSitter for intelligent chunking
-    this.treeSitterReady = this.initializeTreeSitter();
+    this.treeSitterReady = getLocalRetrievalProfile()
+      ? Promise.resolve()
+      : this.initializeTreeSitter();
   }
 
   private async initializeTreeSitter(): Promise<void> {
@@ -276,6 +280,7 @@ export class LocalEmbeddingGenerator {
    * Get expected dimensions for a provider
    */
   private getExpectedDimensions(providerName: string): number {
+    if (getLocalRetrievalProfile()) return 512;
     switch (providerName) {
       case 'voyageai':
         return 1024; // VoyageAI model dimensions
@@ -561,7 +566,19 @@ export class LocalEmbeddingGenerator {
     };
 
     // Chunk the content
-    const chunks = await this.chunkContent(content, filePath, options);
+    const profile = getLocalRetrievalProfile();
+    if (profile && !this.localProvider) this.localProvider = getDefaultLocalProvider();
+    const chunks: Array<{
+      content: string;
+      input?: string;
+      index: number;
+      startLine: number;
+      endLine: number;
+      symbols?: string[];
+      type: 'code' | 'comment' | 'docstring' | 'import' | 'export';
+    }> = profile
+      ? await this.localProvider!.planChunks!(content, relativePath)
+      : await this.chunkContent(content, filePath, options);
 
     // Debug chunking for Python files specifically
     if (language === 'python') {
@@ -602,7 +619,9 @@ export class LocalEmbeddingGenerator {
       const identity = this.getLocalInputIdentity();
       const format = this.storage.getQuantizationMode?.();
       const reusable =
-        identity && !options.force && (format === 'float32' || format === 'int8')
+        identity &&
+        !options.force &&
+        (format === 'float32' || format === 'int8' || (profile && format === 'turbo4'))
           ? (await this.storage.getFileEmbeddings(projectId, fileId)) || []
           : [];
       const cache = new Map<string, EmbeddingChunk>();
@@ -612,12 +631,17 @@ export class LocalEmbeddingGenerator {
           old.metadata.embeddingInputKey &&
           old.metadata.embeddingDimensions === dimensions &&
           old.metadata.embeddingFormat === format &&
+          (!profile ||
+            (old.metadata.embeddingProvider === profile.provider &&
+              isTurboQuantized(old.embedding) &&
+              old.embedding.rotationSeed === profile.rotationSeed &&
+              old.embedding.bits === 4)) &&
           !cache.has(old.metadata.embeddingInputKey)
         ) {
           cache.set(old.metadata.embeddingInputKey, old);
         }
       }
-      const texts = chunks.map(chunk => `File: ${relativePath}\n\n${chunk.content}`);
+      const texts = chunks.map(chunk => chunk.input || `File: ${relativePath}\n\n${chunk.content}`);
       const keyFor = (input: string, model = identity) =>
         model
           ? crypto
@@ -679,9 +703,8 @@ export class LocalEmbeddingGenerator {
         });
       });
 
-      // Generate successfully before replacing the previous index or freshness stamp.
-      await this.storage.storeFileMetadata({ ...fileMetadata, chunkLayoutVersion: undefined });
-      await this.storage.deleteEmbeddingsByFile(fileId);
+      // Assemble a complete replacement before touching the previous source or vectors.
+      const records: EmbeddingChunk[] = [];
       for (let index = 0; index < chunks.length; index++) {
         const chunk = chunks[index],
           embedding = vectors[index];
@@ -692,7 +715,7 @@ export class LocalEmbeddingGenerator {
               embeddingDimensions: cached[index]!.metadata.embeddingDimensions,
               embeddingProvider: cached[index]!.metadata.embeddingProvider,
             };
-        await this.storage.storeEmbedding({
+        records.push({
           id: `${projectId}_${relativePath}_${chunk.index}`,
           projectId,
           fileId,
@@ -713,11 +736,17 @@ export class LocalEmbeddingGenerator {
           createdAt: new Date(),
           updatedAt: new Date(),
         });
-        fileProgress.embeddings++;
-        fileProgress.processedChunks++;
       }
-      // Only a complete write is eligible to pass future layout freshness checks.
-      await this.storage.storeFileMetadata(fileMetadata);
+      if (profile) {
+        await this.storage.replaceQualityFile(fileMetadata, records);
+      } else {
+        await this.storage.storeFileMetadata({ ...fileMetadata, chunkLayoutVersion: undefined });
+        await this.storage.deleteEmbeddingsByFile(fileId);
+        for (const record of records) await this.storage.storeEmbedding(record);
+        await this.storage.storeFileMetadata(fileMetadata);
+      }
+      fileProgress.embeddings = records.length;
+      fileProgress.processedChunks = records.length;
       fileProgress.reusedEmbeddings = cached.filter(Boolean).length;
       fileProgress.deduplicatedEmbeddings = pending.length - uniquePending.length;
       logger.debug('File embedding refresh complete', {
@@ -968,6 +997,10 @@ export class LocalEmbeddingGenerator {
    * Priority: Local Models → OpenAI (explicit) → VoyageAI (explicit) → Error
    */
   private async generateBatchEmbeddings(texts: string[]): Promise<number[][]> {
+    if (getLocalRetrievalProfile()) {
+      if (!this.localProvider) this.localProvider = getDefaultLocalProvider();
+      return (await this.localProvider.generateEmbeddings(texts)).map(result => result.embedding);
+    }
     // Validate and filter input texts
     const validTexts = texts.filter(text => {
       if (text === undefined || text === null) {
@@ -1189,6 +1222,21 @@ export class LocalEmbeddingGenerator {
   async generateQueryEmbedding(text: string, projectId?: string): Promise<number[]> {
     if (!LocalEmbeddingStorage.isEnabled()) {
       throw new Error('Local embeddings not enabled - set USE_LOCAL_EMBEDDINGS=true');
+    }
+
+    const profile = getLocalRetrievalProfile();
+    if (profile) {
+      if (projectId) {
+        const compatibility = await this.storage.validateEmbeddingCompatibility(
+          projectId,
+          profile.provider,
+          512
+        );
+        if (!compatibility.compatible)
+          throw new Error('The local quality index is incompatible. Rebuild its profile index.');
+      }
+      if (!this.localProvider) this.localProvider = getDefaultLocalProvider();
+      return (await this.localProvider.generateQueryEmbedding!(text)).embedding;
     }
 
     // If projectId provided, try to use the same model as stored embeddings
@@ -1464,6 +1512,7 @@ export class LocalEmbeddingGenerator {
    * Compute the current provider selection (without caching)
    */
   private computeCurrentProvider(): string {
+    if (getLocalRetrievalProfile()) return 'local';
     // Default to local opensource models (transformers.js)
     logger.info('🔧 Provider selection debug', {
       hasAmbianceApiKey: !!this.ambianceApiKey,
@@ -1495,6 +1544,7 @@ export class LocalEmbeddingGenerator {
   }
 
   public getCurrentDimensions(): number {
+    if (getLocalRetrievalProfile()) return 512;
     // Return expected dimensions for current provider
     const provider = this.getCurrentProvider();
     switch (provider) {
@@ -1670,6 +1720,14 @@ export class LocalEmbeddingGenerator {
    * Get project files matching patterns
    */
   private async getProjectFiles(projectPath: string, patterns?: string[]): Promise<string[]> {
+    if (getLocalRetrievalProfile()) {
+      const { discoverIndexableProjectFiles } = await import(
+        '../runtime/embeddings/indexableFiles'
+      );
+      return (await discoverIndexableProjectFiles(projectPath, patterns)).map(file =>
+        path.join(projectPath, file)
+      );
+    }
     const { globby } = await import('globby');
 
     const defaultPatterns = [
@@ -1809,6 +1867,18 @@ export class LocalEmbeddingGenerator {
     projectId: string,
     options: GenerationOptions
   ): Promise<void> {
+    const profile = getLocalRetrievalProfile();
+    if (profile) {
+      const compatibility = await this.storage.validateEmbeddingCompatibility(
+        projectId,
+        profile.provider,
+        512
+      );
+      if (!compatibility.compatible)
+        throw new Error('The local quality index is incompatible; existing data was retained.');
+      await this.storage.checkModelChange(projectId, profile.provider, 512, 'turbo4');
+      return;
+    }
     try {
       // Determine current model info based on available providers
       const currentProvider = this.getCurrentProvider();
